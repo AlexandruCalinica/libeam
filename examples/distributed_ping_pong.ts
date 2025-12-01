@@ -8,6 +8,7 @@
 //
 // This example shows:
 // - Setting up ZeroMQ transport for real network communication
+// - GossipProtocol with GossipUDP for cluster membership
 // - Registry-based actor discovery across nodes
 // - Using getActorByName() to get remote actor references
 // - Bidirectional communication between distributed actors
@@ -16,12 +17,12 @@ import {
   Actor,
   ActorRef,
   ActorSystem,
-  ActorId,
   ZeroMQTransport,
   RegistryGossip,
   GossipRegistry,
   CustomGossipCluster,
   GossipProtocol,
+  GossipUDP,
 } from "../src";
 
 // --- Configuration ---
@@ -30,13 +31,15 @@ const CONFIG = {
     nodeId: "node1",
     rpcPort: 5555,
     pubPort: 5556,
-    address: "tcp://127.0.0.1",
+    gossipPort: 6001,
+    address: "127.0.0.1",
   },
   node2: {
     nodeId: "node2",
     rpcPort: 5557,
     pubPort: 5558,
-    address: "tcp://127.0.0.1",
+    gossipPort: 6002,
+    address: "127.0.0.1",
   },
 };
 
@@ -54,16 +57,17 @@ class PingActor extends Actor {
 
   async handleCast(message: any): Promise<void> {
     if (message.type === "start") {
-      // Look up the PongActor by name
+      // Look up the PongActor by name using the registry
       this.pongRef = await this.context.system.getActorByName("pong");
       if (this.pongRef) {
         console.log(
           `[${CONFIG.node1.nodeId}] Found PongActor, starting ping-pong!`,
         );
-        this.pongRef.cast({ type: "ping", from: this.self, count: 0 });
+        // Send our registered name so the receiver can look us up
+        this.pongRef.cast({ type: "ping", fromName: "ping", count: 0 });
       } else {
         console.log(
-          `[${CONFIG.node1.nodeId}] PongActor not found yet, retrying...`,
+          `[${CONFIG.node1.nodeId}] PongActor not found yet, retrying in 1s...`,
         );
         setTimeout(() => this.self.cast({ type: "start" }), 1000);
       }
@@ -77,7 +81,7 @@ class PingActor extends Actor {
           if (this.pongRef) {
             this.pongRef.cast({
               type: "ping",
-              from: this.self,
+              fromName: "ping",
               count: this.count + 1,
             });
           }
@@ -98,23 +102,35 @@ class PingActor extends Actor {
 
 class PongActor extends Actor {
   private count = 0;
+  private pingRef: ActorRef | null = null;
 
   init() {
     console.log(`[${CONFIG.node2.nodeId}] PongActor initialized and ready!`);
   }
 
-  handleCast(message: any): void {
+  async handleCast(message: any): Promise<void> {
     if (message.type === "ping") {
       this.count = message.count;
       console.log(
         `[${CONFIG.node2.nodeId}] Received ping #${this.count}, sending pong...`,
       );
 
-      // Get the sender's ref and respond
-      const senderRef = message.from as ActorRef;
-      setTimeout(() => {
-        senderRef.cast({ type: "pong", count: this.count });
-      }, 500);
+      // Look up the sender by name if we don't have a cached ref
+      if (!this.pingRef && message.fromName) {
+        this.pingRef = await this.context.system.getActorByName(
+          message.fromName,
+        );
+      }
+
+      if (this.pingRef) {
+        setTimeout(() => {
+          this.pingRef!.cast({ type: "pong", count: this.count });
+        }, 500);
+      } else {
+        console.log(
+          `[${CONFIG.node2.nodeId}] Could not find ping actor to respond!`,
+        );
+      }
     }
   }
 
@@ -126,28 +142,7 @@ class PongActor extends Actor {
   }
 }
 
-// --- Helper Functions ---
-
-function createGossipProtocol(nodeId: string, peers: string[]): GossipProtocol {
-  // Create a mock gossip protocol for local testing
-  // In production, you'd use actual network discovery
-  return {
-    nodeId,
-    getLivePeers: () =>
-      peers.map((id) => ({
-        id,
-        address:
-          id === "node1"
-            ? `${CONFIG.node1.address}:${CONFIG.node1.rpcPort}`
-            : `${CONFIG.node2.address}:${CONFIG.node2.rpcPort}`,
-        state: "alive" as const,
-        generation: 1,
-        metadata: {},
-      })),
-    on: () => {},
-    emit: () => {},
-  } as any;
-}
+// --- Node Setup Functions ---
 
 async function runNode1() {
   console.log("=== Starting Node 1 (Ping) ===\n");
@@ -155,33 +150,59 @@ async function runNode1() {
   const config = CONFIG.node1;
   const peerConfig = CONFIG.node2;
 
-  // Create transport
+  // Create ZeroMQ transport
   const transport = new ZeroMQTransport({
     nodeId: config.nodeId,
     rpcPort: config.rpcPort,
     pubPort: config.pubPort,
   });
 
-  // Set up peers - RPC address only, PUB port is derived as rpcPort + 1
-  transport.updatePeers([
-    [peerConfig.nodeId, `${peerConfig.address}:${peerConfig.rpcPort}`],
-  ]);
-
+  // IMPORTANT: connect() first to initialize sockets, then updatePeers()
   await transport.connect();
 
-  // Create cluster and registry
-  const gossipProtocol = createGossipProtocol(config.nodeId, [
-    peerConfig.nodeId,
+  // Set up peers - RPC address for ZeroMQ (must be after connect for SUB socket)
+  transport.updatePeers([
+    [peerConfig.nodeId, `tcp://${peerConfig.address}:${peerConfig.rpcPort}`],
   ]);
+  console.log(`[${config.nodeId}] Transport connected, peer configured`);
+
+  // Create GossipUDP for cluster membership
+  const gossipUDP = new GossipUDP({
+    address: config.address,
+    port: config.gossipPort,
+  });
+
+  // Create GossipProtocol with real UDP
+  const gossipProtocol = new GossipProtocol(
+    config.nodeId,
+    `tcp://${config.address}:${config.rpcPort}`, // RPC address
+    `${config.address}:${config.gossipPort}`, // Gossip UDP address
+    gossipUDP,
+    {
+      seedNodes: [`${peerConfig.address}:${peerConfig.gossipPort}`],
+      gossipIntervalMs: 500,
+      cleanupIntervalMs: 1000,
+      failureTimeoutMs: 5000,
+      gossipFanout: 2,
+    },
+  );
+
+  // Create cluster wrapper and start gossip protocol
   const cluster = new CustomGossipCluster(gossipProtocol);
+  await cluster.start();
+  console.log(`[${config.nodeId}] Cluster started, gossip protocol running`);
+
+  // Create registry for actor discovery
   const registryGossip = new RegistryGossip(config.nodeId, transport, cluster);
   await registryGossip.connect();
   const registry = new GossipRegistry(registryGossip);
+  console.log(`[${config.nodeId}] Registry connected`);
 
   // Create actor system
-  const system = new ActorSystem(cluster as any, transport, registry);
+  const system = new ActorSystem(cluster, transport, registry);
   system.registerActorClasses([PingActor, PongActor]);
   await system.start();
+  console.log(`[${config.nodeId}] Actor system started`);
 
   // Spawn the PingActor with a registered name
   const pingRef = system.spawn(PingActor, { name: "ping" });
@@ -191,7 +212,7 @@ async function runNode1() {
   console.log(`[${config.nodeId}] Waiting for PongActor to be available...`);
   setTimeout(() => {
     pingRef.cast({ type: "start" });
-  }, 2000);
+  }, 3000);
 
   // Keep the process running
   console.log(`[${config.nodeId}] Press Ctrl+C to stop\n`);
@@ -199,6 +220,7 @@ async function runNode1() {
   process.on("SIGINT", async () => {
     console.log(`\n[${config.nodeId}] Shutting down...`);
     await system.shutdown();
+    await cluster.leave();
     await transport.disconnect();
     process.exit(0);
   });
@@ -210,33 +232,59 @@ async function runNode2() {
   const config = CONFIG.node2;
   const peerConfig = CONFIG.node1;
 
-  // Create transport
+  // Create ZeroMQ transport
   const transport = new ZeroMQTransport({
     nodeId: config.nodeId,
     rpcPort: config.rpcPort,
     pubPort: config.pubPort,
   });
 
-  // Set up peers - RPC address only, PUB port is derived as rpcPort + 1
-  transport.updatePeers([
-    [peerConfig.nodeId, `${peerConfig.address}:${peerConfig.rpcPort}`],
-  ]);
-
+  // IMPORTANT: connect() first to initialize sockets, then updatePeers()
   await transport.connect();
 
-  // Create cluster and registry
-  const gossipProtocol = createGossipProtocol(config.nodeId, [
-    peerConfig.nodeId,
+  // Set up peers - RPC address for ZeroMQ (must be after connect for SUB socket)
+  transport.updatePeers([
+    [peerConfig.nodeId, `tcp://${peerConfig.address}:${peerConfig.rpcPort}`],
   ]);
+  console.log(`[${config.nodeId}] Transport connected, peer configured`);
+
+  // Create GossipUDP for cluster membership
+  const gossipUDP = new GossipUDP({
+    address: config.address,
+    port: config.gossipPort,
+  });
+
+  // Create GossipProtocol with real UDP
+  const gossipProtocol = new GossipProtocol(
+    config.nodeId,
+    `tcp://${config.address}:${config.rpcPort}`, // RPC address
+    `${config.address}:${config.gossipPort}`, // Gossip UDP address
+    gossipUDP,
+    {
+      seedNodes: [`${peerConfig.address}:${peerConfig.gossipPort}`],
+      gossipIntervalMs: 500,
+      cleanupIntervalMs: 1000,
+      failureTimeoutMs: 5000,
+      gossipFanout: 2,
+    },
+  );
+
+  // Create cluster wrapper and start gossip protocol
   const cluster = new CustomGossipCluster(gossipProtocol);
+  await cluster.start();
+  console.log(`[${config.nodeId}] Cluster started, gossip protocol running`);
+
+  // Create registry for actor discovery
   const registryGossip = new RegistryGossip(config.nodeId, transport, cluster);
   await registryGossip.connect();
   const registry = new GossipRegistry(registryGossip);
+  console.log(`[${config.nodeId}] Registry connected`);
 
   // Create actor system
-  const system = new ActorSystem(cluster as any, transport, registry);
+  const system = new ActorSystem(cluster, transport, registry);
   system.registerActorClasses([PingActor, PongActor]);
   await system.start();
+  console.log(`[${config.nodeId}] Actor system started`);
 
   // Spawn the PongActor with a registered name
   const pongRef = system.spawn(PongActor, { name: "pong" });
@@ -249,6 +297,7 @@ async function runNode2() {
   process.on("SIGINT", async () => {
     console.log(`\n[${config.nodeId}] Shutting down...`);
     await system.shutdown();
+    await cluster.leave();
     await transport.disconnect();
     process.exit(0);
   });
@@ -277,8 +326,9 @@ async function main() {
     );
     console.log("");
     console.log(
-      "This demonstrates distributed actors communicating via ZeroMQ.",
+      "This demonstrates distributed actors communicating via ZeroMQ",
     );
+    console.log("with GossipProtocol for cluster membership discovery.");
     process.exit(1);
   }
 }

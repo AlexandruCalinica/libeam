@@ -66,7 +66,16 @@ When a feature changes:
 2. Run examples to verify they still work
 3. Update console output if it changed
 
-### 7. Error Handling
+### 7. Examples Must Be Tested Before Completion
+
+An example is not considered done until it has been:
+1. **Actually executed** - Run the example and observe the output
+2. **Verified working** - Confirm it produces the expected behavior
+3. **Debugged if needed** - Fix any runtime errors before committing
+
+Do not rely solely on type-checking or code review. Many issues (circular references, race conditions, missing initialization) only manifest at runtime.
+
+### 8. Error Handling
 
 Examples should demonstrate proper error handling:
 - Show how to handle actor crashes
@@ -121,7 +130,8 @@ main().catch(console.error);
 
 - [ ] File follows naming convention
 - [ ] Header comment explains purpose
-- [ ] Runs without errors: `npx ts-node examples/<name>.ts`
+- [ ] **Actually ran and tested**: `npx ts-node examples/<name>.ts`
+- [ ] Produces expected output without errors
 - [ ] Cleans up resources on exit
 - [ ] Console output is clear and informative
 - [ ] No hardcoded values that should be configurable
