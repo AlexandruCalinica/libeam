@@ -23,39 +23,67 @@ export type RequestHandler = (message: any) => Promise<any>;
 /**
  * An interface for a transport layer that can send and receive messages
  * between nodes in the cluster.
+ *
+ * This interface uses nodeId-based addressing. The transport internally
+ * maps nodeId to physical addresses (e.g., TCP endpoints).
  */
 export interface Transport {
   /**
-   * Publishes a fire-and-forget message to a channel.
-   * @param channel The channel to publish to.
-   * @param message The message to send.
+   * Gets this node's unique identifier.
    */
-  publish(channel: string, message: any): Promise<void>;
+  getNodeId(): string;
 
   /**
-   * Sends a request to a channel and waits for a reply.
-   * @param channel The channel to send the request to.
+   * Sends a request to a specific node and waits for a reply.
+   * Uses correlation IDs internally to match requests with responses.
+   * @param nodeId The ID of the remote node to send the request to.
    * @param message The message to send.
    * @param timeout The timeout in milliseconds to wait for a reply.
    * @returns A promise that resolves with the reply.
    */
-  request(channel: string, message: any, timeout: number): Promise<any>;
+  request(nodeId: string, message: any, timeout: number): Promise<any>;
 
   /**
-   * Subscribes to a channel to receive fire-and-forget messages.
-   * @param channel The channel to subscribe to.
+   * Sends a fire-and-forget message to a specific node.
+   * @param nodeId The ID of the remote node to send the message to.
+   * @param message The message to send.
+   */
+  send(nodeId: string, message: any): Promise<void>;
+
+  /**
+   * Publishes a message to a topic that all nodes can subscribe to.
+   * Used for registry gossip and other broadcast scenarios.
+   * @param topic The topic to publish to.
+   * @param message The message to send.
+   */
+  publish(topic: string, message: any): Promise<void>;
+
+  /**
+   * Subscribes to a topic to receive messages from all nodes.
+   * @param topic The topic to subscribe to.
    * @param handler The handler for incoming messages.
    * @returns A promise that resolves with a subscription object.
    */
-  subscribe(channel: string, handler: MessageHandler): Promise<Subscription>;
+  subscribe(topic: string, handler: MessageHandler): Promise<Subscription>;
 
   /**
-   * Subscribes to a channel to handle requests and send replies.
-   * @param channel The channel to subscribe to.
+   * Sets up the handler for all incoming RPC requests.
    * @param handler The handler for incoming requests.
-   * @returns A promise that resolves with a subscription object.
    */
-  respond(channel: string, handler: RequestHandler): Promise<Subscription>;
+  onRequest(handler: RequestHandler): void;
+
+  /**
+   * Sets up the handler for all incoming fire-and-forget messages.
+   * @param handler The handler for incoming messages.
+   */
+  onMessage(handler: MessageHandler): void;
+
+  /**
+   * Updates the known peer list with their physical addresses.
+   * Called by the membership layer when nodes join or leave.
+   * @param peers Array of [nodeId, physicalAddress] tuples.
+   */
+  updatePeers(peers: Array<[nodeId: string, address: string]>): void;
 
   /**
    * Connects the transport.

@@ -1,73 +1,132 @@
 // src/in_memory_transport.ts
 
-import { EventEmitter } from 'events';
-import { Transport, Subscription, MessageHandler, RequestHandler } from './transport';
-import { v4 as uuidv4 } from 'uuid';
+import { EventEmitter } from "events";
+import {
+  Transport,
+  Subscription,
+  MessageHandler,
+  RequestHandler,
+} from "./transport";
 
 /**
  * An in-memory implementation of the Transport interface, useful for testing
  * and single-node operation. It uses an EventEmitter to simulate channels.
+ *
+ * For multi-node testing, create multiple instances and wire them together
+ * via a shared bus or use separate instances.
  */
 export class InMemoryTransport implements Transport {
   private readonly bus = new EventEmitter();
-  private readonly responseChannels = new Map<string, (reply: any) => void>();
+  private readonly nodeId: string;
+  private requestHandler?: RequestHandler;
+  private messageHandler?: MessageHandler;
+  private peers = new Map<string, InMemoryTransport>();
+
+  constructor(nodeId: string) {
+    this.nodeId = nodeId;
+  }
+
+  getNodeId(): string {
+    return this.nodeId;
+  }
 
   async connect(): Promise<void> {
-    this.bus.setMaxListeners(100); // Default is 10, might need more for a busy system
-    return Promise.resolve();
+    this.bus.setMaxListeners(100);
   }
 
   async disconnect(): Promise<void> {
     this.bus.removeAllListeners();
-    return Promise.resolve();
+    this.peers.clear();
   }
 
-  async publish(channel: string, message: any): Promise<void> {
-    this.bus.emit(channel, message);
+  updatePeers(peers: Array<[nodeId: string, address: string]>): void {
+    // For in-memory transport, address is ignored
+    // Peers must be manually wired via setPeer()
+    // This is fine for testing
   }
 
-  async request(channel: string, message: any, timeout: number): Promise<any> {
-    return new Promise((resolve, reject) => {
-      const correlationId = uuidv4();
-      const responseChannel = `${channel}:${correlationId}`;
-
-      const timeoutId = setTimeout(() => {
-        this.responseChannels.delete(responseChannel);
-        reject(new Error(`Request timed out after ${timeout}ms`));
-      }, timeout);
-
-      this.responseChannels.set(responseChannel, (reply) => {
-        clearTimeout(timeoutId);
-        this.responseChannels.delete(responseChannel);
-        resolve(reply);
-      });
-
-      this.bus.emit(channel, { message, replyTo: responseChannel });
-    });
+  /**
+   * Manually wire another InMemoryTransport as a peer.
+   * Only needed for multi-node testing scenarios.
+   */
+  setPeer(nodeId: string, transport: InMemoryTransport): void {
+    this.peers.set(nodeId, transport);
   }
 
-  async subscribe(channel: string, handler: MessageHandler): Promise<Subscription> {
-    this.bus.on(channel, handler);
-    return {
-      unsubscribe: async () => {
-        this.bus.off(channel, handler);
-      },
-    };
-  }
+  async request(nodeId: string, message: any, timeout: number): Promise<any> {
+    const peer = this.peers.get(nodeId);
 
-  async respond(channel: string, handler: RequestHandler): Promise<Subscription> {
-    const fullHandler = async ({ message, replyTo }: { message: any; replyTo: string }) => {
-      const reply = await handler(message);
-      const responseHandler = this.responseChannels.get(replyTo);
-      if (responseHandler) {
-        responseHandler(reply);
+    if (!peer) {
+      // If no peer, assume it's local (same node)
+      if (nodeId === this.nodeId && this.requestHandler) {
+        return this.requestHandler(message);
       }
-    };
-    this.bus.on(channel, fullHandler);
+      throw new Error(`No peer found for node ${nodeId}`);
+    }
+
+    if (!peer.requestHandler) {
+      throw new Error(`No request handler on peer ${nodeId}`);
+    }
+
+    // Simulate async behavior with timeout
+    return Promise.race([
+      peer.requestHandler(message),
+      new Promise((_, reject) =>
+        setTimeout(
+          () => reject(new Error(`Request timeout after ${timeout}ms`)),
+          timeout,
+        ),
+      ),
+    ]);
+  }
+
+  async send(nodeId: string, message: any): Promise<void> {
+    const peer = this.peers.get(nodeId);
+
+    if (!peer) {
+      // If no peer, assume it's local
+      if (nodeId === this.nodeId && this.messageHandler) {
+        this.messageHandler(message);
+        return;
+      }
+      throw new Error(`No peer found for node ${nodeId}`);
+    }
+
+    if (!peer.messageHandler) {
+      // Fire-and-forget, so just drop if no handler
+      return;
+    }
+
+    peer.messageHandler(message);
+  }
+
+  async publish(topic: string, message: any): Promise<void> {
+    // Publish to local bus
+    this.bus.emit(topic, message);
+
+    // Also publish to all peers' buses
+    for (const peer of this.peers.values()) {
+      peer.bus.emit(topic, message);
+    }
+  }
+
+  async subscribe(
+    topic: string,
+    handler: MessageHandler,
+  ): Promise<Subscription> {
+    this.bus.on(topic, handler);
     return {
       unsubscribe: async () => {
-        this.bus.off(channel, fullHandler);
+        this.bus.off(topic, handler);
       },
     };
+  }
+
+  onRequest(handler: RequestHandler): void {
+    this.requestHandler = handler;
+  }
+
+  onMessage(handler: MessageHandler): void {
+    this.messageHandler = handler;
   }
 }

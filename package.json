@@ -4,7 +4,10 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "vitest",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "check": "npm run typecheck && npm run test",
     "example:chat": "ts-node examples/chat.ts"
   },
   "keywords": [],
@@ -19,6 +22,8 @@
     "vitest": "^4.0.13"
   },
   "dependencies": {
-    "uuid": "^13.0.0"
+    "gossip-js": "^0.0.4",
+    "uuid": "^13.0.0",
+    "zeromq": "^6.5.0"
   }
 }

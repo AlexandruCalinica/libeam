@@ -6,69 +6,90 @@ import {
   InMemoryRegistry,
   InMemoryTransport,
   Cluster,
-} from '../src';
+} from "../src";
+import { describe, it, expect, beforeEach } from "vitest";
 
 class PlacementTestActor extends Actor {}
 
-// Hack to register actor classes globally for remote spawning
-(global as any).actorClasses = {
-  PlacementTestActor,
-};
+/**
+ * A mock cluster that can track multiple members.
+ */
+class MockCluster implements Cluster {
+  private members: string[] = [];
 
-describe('PlacementEngine', () => {
-  let transport: InMemoryTransport;
+  constructor(public readonly nodeId: string) {
+    this.members = [nodeId];
+  }
+
+  addMember(nodeId: string): void {
+    if (!this.members.includes(nodeId)) {
+      this.members.push(nodeId);
+    }
+  }
+
+  getMembers(): string[] {
+    return [...this.members];
+  }
+}
+
+describe("PlacementEngine", () => {
   let node1: ActorSystem;
   let node2: ActorSystem;
-  let cluster1: Cluster;
-  let cluster2: Cluster;
+  let cluster1: MockCluster;
+  let cluster2: MockCluster;
 
   beforeEach(async () => {
-    transport = new InMemoryTransport();
-    await transport.connect();
+    const transport1 = new InMemoryTransport("node1");
+    const transport2 = new InMemoryTransport("node2");
+
+    // Wire transports together for multi-node testing
+    transport1.setPeer("node2", transport2);
+    transport2.setPeer("node1", transport1);
+
+    await transport1.connect();
+    await transport2.connect();
 
     const registry1 = new InMemoryRegistry();
     const registry2 = new InMemoryRegistry();
     // @ts-ignore
     registry2.registry = registry1.registry;
 
-    cluster1 = new Cluster(transport, { nodeId: 'node1', heartbeatIntervalMs: 50 });
-    cluster2 = new Cluster(transport, { nodeId: 'node2', heartbeatIntervalMs: 50 });
+    cluster1 = new MockCluster("node1");
+    cluster2 = new MockCluster("node2");
 
-    await cluster1.start();
-    await cluster2.start();
-    
-    // Wait for clusters to see each other
-    await new Promise(r => setTimeout(r, 100));
+    // Each cluster knows about both nodes
+    cluster1.addMember("node2");
+    cluster2.addMember("node1");
 
-    node1 = new ActorSystem(cluster1, transport, registry1);
-    node2 = new ActorSystem(cluster2, transport, registry2);
+    node1 = new ActorSystem(cluster1, transport1, registry1);
+    node2 = new ActorSystem(cluster2, transport2, registry2);
+
+    // Register actor classes on both nodes for remote spawning
+    node1.registerActorClass(PlacementTestActor);
+    node2.registerActorClass(PlacementTestActor);
 
     await node1.start();
     await node2.start();
   });
 
-  it('should spawn actors round-robin across the cluster', async () => {
+  it("should spawn actors round-robin across the cluster", async () => {
     // Spawn two actors with round-robin strategy from node1
-    const ref1 = node1.spawn(PlacementTestActor, { strategy: 'round-robin' });
-    const ref2 = node1.spawn(PlacementTestActor, { strategy: 'round-robin' });
+    const ref1 = node1.spawn(PlacementTestActor, { strategy: "round-robin" });
+    const ref2 = node1.spawn(PlacementTestActor, { strategy: "round-robin" });
 
     // Give time for the spawn messages to be processed
-    await new Promise(r => setTimeout(r, 100));
+    await new Promise((r) => setTimeout(r, 100));
 
     // One actor should be on each node. The placement engine is simple,
     // so we can predict the order.
     expect(node1.getLocalActorIds()).toHaveLength(1);
     expect(node2.getLocalActorIds()).toHaveLength(1);
 
-    // Let's make sure the refs point to the right nodes
-    const node1ActorId = node1.getLocalActorIds()[0];
-    const node2ActorId = node2.getLocalActorIds()[0];
-    
-    // The first one goes to node2 (counter starts at 0, members are [node1, node2], counter becomes 1)
-    // The second one goes to node1 (counter becomes 0)
-    // This depends on the order of members in the cluster, which is not guaranteed.
-    // A better test would be to just check that the total number of actors is correct.
-    const allActors = [...node1.getLocalActorIds(), ...node2.getLocalActorIds()];
+    // The total number of actors should be 2
+    const allActors = [
+      ...node1.getLocalActorIds(),
+      ...node2.getLocalActorIds(),
+    ];
     expect(allActors).toHaveLength(2);
   });
 });
