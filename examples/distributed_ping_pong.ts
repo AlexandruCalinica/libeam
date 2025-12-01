@@ -47,7 +47,9 @@ class PingActor extends Actor {
   private count = 0;
 
   async init() {
-    console.log(`[${CONFIG.node1.nodeId}] PingActor initialized, waiting for PongActor...`);
+    console.log(
+      `[${CONFIG.node1.nodeId}] PingActor initialized, waiting for PongActor...`,
+    );
   }
 
   async handleCast(message: any): Promise<void> {
@@ -55,10 +57,14 @@ class PingActor extends Actor {
       // Look up the PongActor by name
       this.pongRef = await this.context.system.getActorByName("pong");
       if (this.pongRef) {
-        console.log(`[${CONFIG.node1.nodeId}] Found PongActor, starting ping-pong!`);
+        console.log(
+          `[${CONFIG.node1.nodeId}] Found PongActor, starting ping-pong!`,
+        );
         this.pongRef.cast({ type: "ping", from: this.self, count: 0 });
       } else {
-        console.log(`[${CONFIG.node1.nodeId}] PongActor not found yet, retrying...`);
+        console.log(
+          `[${CONFIG.node1.nodeId}] PongActor not found yet, retrying...`,
+        );
         setTimeout(() => this.self.cast({ type: "start" }), 1000);
       }
     } else if (message.type === "pong") {
@@ -69,7 +75,11 @@ class PingActor extends Actor {
         // Continue the game
         setTimeout(() => {
           if (this.pongRef) {
-            this.pongRef.cast({ type: "ping", from: this.self, count: this.count + 1 });
+            this.pongRef.cast({
+              type: "ping",
+              from: this.self,
+              count: this.count + 1,
+            });
           }
         }, 500);
       } else {
@@ -96,7 +106,9 @@ class PongActor extends Actor {
   handleCast(message: any): void {
     if (message.type === "ping") {
       this.count = message.count;
-      console.log(`[${CONFIG.node2.nodeId}] Received ping #${this.count}, sending pong...`);
+      console.log(
+        `[${CONFIG.node2.nodeId}] Received ping #${this.count}, sending pong...`,
+      );
 
       // Get the sender's ref and respond
       const senderRef = message.from as ActorRef;
@@ -144,13 +156,13 @@ async function runNode1() {
   const peerConfig = CONFIG.node2;
 
   // Create transport
-  const transport = new ZeroMQTransport(
-    config.nodeId,
-    `${config.address}:${config.rpcPort}`,
-    `${config.address}:${config.pubPort}`,
-  );
+  const transport = new ZeroMQTransport({
+    nodeId: config.nodeId,
+    rpcPort: config.rpcPort,
+    pubPort: config.pubPort,
+  });
 
-  // Set up peers
+  // Set up peers - RPC address only, PUB port is derived as rpcPort + 1
   transport.updatePeers([
     [peerConfig.nodeId, `${peerConfig.address}:${peerConfig.rpcPort}`],
   ]);
@@ -158,7 +170,9 @@ async function runNode1() {
   await transport.connect();
 
   // Create cluster and registry
-  const gossipProtocol = createGossipProtocol(config.nodeId, [peerConfig.nodeId]);
+  const gossipProtocol = createGossipProtocol(config.nodeId, [
+    peerConfig.nodeId,
+  ]);
   const cluster = new CustomGossipCluster(gossipProtocol);
   const registryGossip = new RegistryGossip(config.nodeId, transport, cluster);
   await registryGossip.connect();
@@ -197,13 +211,13 @@ async function runNode2() {
   const peerConfig = CONFIG.node1;
 
   // Create transport
-  const transport = new ZeroMQTransport(
-    config.nodeId,
-    `${config.address}:${config.rpcPort}`,
-    `${config.address}:${config.pubPort}`,
-  );
+  const transport = new ZeroMQTransport({
+    nodeId: config.nodeId,
+    rpcPort: config.rpcPort,
+    pubPort: config.pubPort,
+  });
 
-  // Set up peers
+  // Set up peers - RPC address only, PUB port is derived as rpcPort + 1
   transport.updatePeers([
     [peerConfig.nodeId, `${peerConfig.address}:${peerConfig.rpcPort}`],
   ]);
@@ -211,7 +225,9 @@ async function runNode2() {
   await transport.connect();
 
   // Create cluster and registry
-  const gossipProtocol = createGossipProtocol(config.nodeId, [peerConfig.nodeId]);
+  const gossipProtocol = createGossipProtocol(config.nodeId, [
+    peerConfig.nodeId,
+  ]);
   const cluster = new CustomGossipCluster(gossipProtocol);
   const registryGossip = new RegistryGossip(config.nodeId, transport, cluster);
   await registryGossip.connect();
@@ -248,13 +264,21 @@ async function main() {
   } else if (nodeArg === "node2") {
     await runNode2();
   } else {
-    console.log("Usage: npx ts-node examples/distributed_ping_pong.ts <node1|node2>");
+    console.log(
+      "Usage: npx ts-node examples/distributed_ping_pong.ts <node1|node2>",
+    );
     console.log("");
     console.log("Run in two separate terminals:");
-    console.log("  Terminal 1: npx ts-node examples/distributed_ping_pong.ts node1");
-    console.log("  Terminal 2: npx ts-node examples/distributed_ping_pong.ts node2");
+    console.log(
+      "  Terminal 1: npx ts-node examples/distributed_ping_pong.ts node1",
+    );
+    console.log(
+      "  Terminal 2: npx ts-node examples/distributed_ping_pong.ts node2",
+    );
     console.log("");
-    console.log("This demonstrates distributed actors communicating via ZeroMQ.");
+    console.log(
+      "This demonstrates distributed actors communicating via ZeroMQ.",
+    );
     process.exit(1);
   }
 }
