@@ -1,6 +1,6 @@
 // test/distributed_integration.test.ts
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import {
   Actor,
   ActorSystem,
@@ -11,32 +11,32 @@ import {
   RegistryGossip,
   GossipRegistry,
   ActorId,
-} from '../src';
+} from "../src";
 
 class CounterActor extends Actor {
   private count = 0;
 
   handleCall(message: any): any {
-    if (message.type === 'increment') {
+    if (message.type === "increment") {
       this.count++;
       return { count: this.count };
     }
-    if (message.type === 'get') {
+    if (message.type === "get") {
       return { count: this.count };
     }
     throw new Error(`Unknown message type: ${message.type}`);
   }
 }
 
-describe('Distributed Integration', () => {
-  it('should work with decentralized registry and gossip cluster', async () => {
+describe("Distributed Integration", () => {
+  it("should work with decentralized registry and gossip cluster", async () => {
     // Setup two nodes with InMemoryTransport (for simplicity)
-    const transport1 = new InMemoryTransport('node1');
-    const transport2 = new InMemoryTransport('node2');
+    const transport1 = new InMemoryTransport("node1");
+    const transport2 = new InMemoryTransport("node2");
 
     // Wire transports together
-    transport1.setPeer('node2', transport2);
-    transport2.setPeer('node1', transport1);
+    transport1.setPeer("node2", transport2);
+    transport2.setPeer("node1", transport1);
 
     await transport1.connect();
     await transport2.connect();
@@ -44,24 +44,52 @@ describe('Distributed Integration', () => {
     // Create mock gossip clusters (simplified for in-memory transport)
     // In real usage, these would be actual GossipProtocol instances with UDP
     const mockGossipProtocol1 = {
-      getNodeId: () => 'node1',
+      getNodeId: () => "node1",
       start: async () => {},
       stop: async () => {},
       getLivePeers: () => [
-        { id: 'node1', address: 'tcp://127.0.0.1:5001', heartbeat: 1, generation: Date.now(), gossipAddress: '127.0.0.1:6001', lastUpdated: Date.now() },
-        { id: 'node2', address: 'tcp://127.0.0.1:5002', heartbeat: 1, generation: Date.now(), gossipAddress: '127.0.0.1:6002', lastUpdated: Date.now() },
+        {
+          id: "node1",
+          address: "tcp://127.0.0.1:5001",
+          heartbeat: 1,
+          generation: Date.now(),
+          gossipAddress: "127.0.0.1:6001",
+          lastUpdated: Date.now(),
+        },
+        {
+          id: "node2",
+          address: "tcp://127.0.0.1:5002",
+          heartbeat: 1,
+          generation: Date.now(),
+          gossipAddress: "127.0.0.1:6002",
+          lastUpdated: Date.now(),
+        },
       ],
       on: () => {},
       emit: () => {},
     } as any;
 
     const mockGossipProtocol2 = {
-      getNodeId: () => 'node2',
+      getNodeId: () => "node2",
       start: async () => {},
       stop: async () => {},
       getLivePeers: () => [
-        { id: 'node1', address: 'tcp://127.0.0.1:5001', heartbeat: 1, generation: Date.now(), gossipAddress: '127.0.0.1:6001', lastUpdated: Date.now() },
-        { id: 'node2', address: 'tcp://127.0.0.1:5002', heartbeat: 1, generation: Date.now(), gossipAddress: '127.0.0.1:6002', lastUpdated: Date.now() },
+        {
+          id: "node1",
+          address: "tcp://127.0.0.1:5001",
+          heartbeat: 1,
+          generation: Date.now(),
+          gossipAddress: "127.0.0.1:6001",
+          lastUpdated: Date.now(),
+        },
+        {
+          id: "node2",
+          address: "tcp://127.0.0.1:5002",
+          heartbeat: 1,
+          generation: Date.now(),
+          gossipAddress: "127.0.0.1:6002",
+          lastUpdated: Date.now(),
+        },
       ],
       on: () => {},
       emit: () => {},
@@ -71,11 +99,11 @@ describe('Distributed Integration', () => {
     const cluster2 = new CustomGossipCluster(mockGossipProtocol2);
 
     // Create RegistryGossip instances
-    const registryGossip1 = new RegistryGossip('node1', transport1, cluster1);
-    const registryGossip2 = new RegistryGossip('node2', transport2, cluster2);
+    const registryGossip1 = new RegistryGossip("node1", transport1, cluster1);
+    const registryGossip2 = new RegistryGossip("node2", transport2, cluster2);
 
-    await registryGossip1.start();
-    await registryGossip2.start();
+    await registryGossip1.connect();
+    await registryGossip2.connect();
 
     const registry1 = new GossipRegistry(registryGossip1);
     const registry2 = new GossipRegistry(registryGossip2);
@@ -88,35 +116,37 @@ describe('Distributed Integration', () => {
     await system2.start();
 
     // Test 1: Spawn actor on node1, access from node2
-    const counter = system1.spawn(CounterActor, { name: 'counter' });
+    const counter = system1.spawn(CounterActor, { name: "counter" });
 
     // Wait for registry to propagate
-    await new Promise(resolve => setTimeout(resolve, 50));
+    await new Promise((resolve) => setTimeout(resolve, 50));
 
     // Node2 should be able to look up the actor
-    const lookupResult = await registry2.lookup('counter');
-    expect(lookupResult).toBe('node1');
+    const lookupResult = await registry2.lookup("counter");
+    expect(lookupResult?.nodeId).toBe("node1");
 
     // Node2 creates a reference to the remote actor
-    const remoteCounter = system2.getRef(new ActorId('node1', counter.id.id, 'counter'));
+    const remoteCounter = system2.getRef(
+      new ActorId("node1", counter.id.id, "counter"),
+    );
 
     // Call the remote actor from node2
-    const result1 = await remoteCounter.call({ type: 'increment' });
+    const result1 = await remoteCounter.call({ type: "increment" });
     expect(result1.count).toBe(1);
 
-    const result2 = await remoteCounter.call({ type: 'increment' });
+    const result2 = await remoteCounter.call({ type: "increment" });
     expect(result2.count).toBe(2);
 
-    const result3 = await remoteCounter.call({ type: 'get' });
+    const result3 = await remoteCounter.call({ type: "get" });
     expect(result3.count).toBe(2);
 
     // Test 2: Verify registry cleanup
     await system1.stop(counter);
 
     // Wait for registry to propagate unregister
-    await new Promise(resolve => setTimeout(resolve, 50));
+    await new Promise((resolve) => setTimeout(resolve, 50));
 
-    const lookupAfterStop = await registry2.lookup('counter');
+    const lookupAfterStop = await registry2.lookup("counter");
     expect(lookupAfterStop).toBeNull();
 
     // Cleanup
@@ -125,35 +155,63 @@ describe('Distributed Integration', () => {
     await transport2.disconnect();
   });
 
-  it('should handle vector clock conflicts in registry', async () => {
-    const transport1 = new InMemoryTransport('node1');
-    const transport2 = new InMemoryTransport('node2');
+  it("should handle vector clock conflicts in registry", async () => {
+    const transport1 = new InMemoryTransport("node1");
+    const transport2 = new InMemoryTransport("node2");
 
-    transport1.setPeer('node2', transport2);
-    transport2.setPeer('node1', transport1);
+    transport1.setPeer("node2", transport2);
+    transport2.setPeer("node1", transport1);
 
     await transport1.connect();
     await transport2.connect();
 
     const mockGossipProtocol1 = {
-      getNodeId: () => 'node1',
+      getNodeId: () => "node1",
       start: async () => {},
       stop: async () => {},
       getLivePeers: () => [
-        { id: 'node1', address: 'tcp://127.0.0.1:5001', heartbeat: 1, generation: Date.now(), gossipAddress: '127.0.0.1:6001', lastUpdated: Date.now() },
-        { id: 'node2', address: 'tcp://127.0.0.1:5002', heartbeat: 1, generation: Date.now(), gossipAddress: '127.0.0.1:6002', lastUpdated: Date.now() },
+        {
+          id: "node1",
+          address: "tcp://127.0.0.1:5001",
+          heartbeat: 1,
+          generation: Date.now(),
+          gossipAddress: "127.0.0.1:6001",
+          lastUpdated: Date.now(),
+        },
+        {
+          id: "node2",
+          address: "tcp://127.0.0.1:5002",
+          heartbeat: 1,
+          generation: Date.now(),
+          gossipAddress: "127.0.0.1:6002",
+          lastUpdated: Date.now(),
+        },
       ],
       on: () => {},
       emit: () => {},
     } as any;
 
     const mockGossipProtocol2 = {
-      getNodeId: () => 'node2',
+      getNodeId: () => "node2",
       start: async () => {},
       stop: async () => {},
       getLivePeers: () => [
-        { id: 'node1', address: 'tcp://127.0.0.1:5001', heartbeat: 1, generation: Date.now(), gossipAddress: '127.0.0.1:6001', lastUpdated: Date.now() },
-        { id: 'node2', address: 'tcp://127.0.0.1:5002', heartbeat: 1, generation: Date.now(), gossipAddress: '127.0.0.1:6002', lastUpdated: Date.now() },
+        {
+          id: "node1",
+          address: "tcp://127.0.0.1:5001",
+          heartbeat: 1,
+          generation: Date.now(),
+          gossipAddress: "127.0.0.1:6001",
+          lastUpdated: Date.now(),
+        },
+        {
+          id: "node2",
+          address: "tcp://127.0.0.1:5002",
+          heartbeat: 1,
+          generation: Date.now(),
+          gossipAddress: "127.0.0.1:6002",
+          lastUpdated: Date.now(),
+        },
       ],
       on: () => {},
       emit: () => {},
@@ -162,22 +220,26 @@ describe('Distributed Integration', () => {
     const cluster1 = new CustomGossipCluster(mockGossipProtocol1);
     const cluster2 = new CustomGossipCluster(mockGossipProtocol2);
 
-    const registryGossip1 = new RegistryGossip('node1', transport1, cluster1);
-    const registryGossip2 = new RegistryGossip('node2', transport2, cluster2);
+    const registryGossip1 = new RegistryGossip("node1", transport1, cluster1);
+    const registryGossip2 = new RegistryGossip("node2", transport2, cluster2);
 
-    await registryGossip1.start();
-    await registryGossip2.start();
+    await registryGossip1.connect();
+    await registryGossip2.connect();
 
     // Register the same actor name on both nodes (conflict)
-    registryGossip1.register('test-actor', 'node1', 1000);
-    registryGossip2.register('test-actor', 'node2', 2000); // Higher generation wins
+    // The generation is now set internally using Date.now(), so later registration wins
+    await registryGossip1.register("test-actor", "node1", "actor-1");
+    await new Promise((resolve) => setTimeout(resolve, 10)); // Ensure different timestamps
+    await registryGossip2.register("test-actor", "node2", "actor-2"); // Later registration wins
 
     // Wait for propagation
-    await new Promise(resolve => setTimeout(resolve, 100));
+    await new Promise((resolve) => setTimeout(resolve, 100));
 
-    // Both nodes should converge to node2 (higher generation)
-    expect(registryGossip1.lookup('test-actor')).toBe('node2');
-    expect(registryGossip2.lookup('test-actor')).toBe('node2');
+    // Both nodes should converge to node2 (later registration)
+    const lookup1 = await registryGossip1.lookup("test-actor");
+    const lookup2 = await registryGossip2.lookup("test-actor");
+    expect(lookup1?.nodeId).toBe("node2");
+    expect(lookup2?.nodeId).toBe("node2");
 
     await transport1.disconnect();
     await transport2.disconnect();

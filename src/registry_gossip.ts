@@ -1,20 +1,21 @@
 // src/registry_gossip.ts
 
-import { EventEmitter } from 'events';
-import { Transport } from './transport';
-import { CustomGossipCluster } from './custom_gossip_cluster';
-import { VectorClock } from './vector_clock';
-import { PeerState } from './gossip_protocol';
+import { EventEmitter } from "events";
+import { Transport } from "./transport";
+import { CustomGossipCluster } from "./custom_gossip_cluster";
+import { VectorClock } from "./vector_clock";
+import { Registry, ActorLocation } from "./registry";
 
 export interface ActorRegistration {
   name: string;
   nodeId: string;
+  actorId: string;
   generation: number;
   vectorClock: VectorClock;
 }
 
 export interface RegistryUpdate {
-  type: 'register' | 'unregister';
+  type: "register" | "unregister";
   registration: ActorRegistration;
 }
 
@@ -31,98 +32,104 @@ export interface RegistryUpdate {
  * - 'actor_unregistered': Emitted when an actor is unregistered
  * - 'actor_updated': Emitted when actor registration is updated (moved nodes, etc.)
  */
-export class RegistryGossip extends EventEmitter {
+export class RegistryGossip extends EventEmitter implements Registry {
   private localClock: VectorClock;
   private registrations = new Map<string, ActorRegistration>();
 
   constructor(
     private nodeId: string,
     private transport: Transport,
-    private membership: CustomGossipCluster
+    private membership: CustomGossipCluster,
   ) {
     super();
     this.localClock = new VectorClock();
 
     // Listen to membership changes to update transport peers and cleanup
-    membership.on('member_join', this.handlePeerJoin.bind(this));
-    membership.on('member_leave', this.handlePeerLeave.bind(this));
+    membership.on("member_join", this.handlePeerJoin.bind(this));
+    membership.on("member_leave", this.handlePeerLeave.bind(this));
   }
 
-  async start(): Promise<void> {
+  async connect(): Promise<void> {
     // Subscribe to registry updates from all peers
-    await this.transport.subscribe('registry:updates',
-      this.handleRegistryUpdate.bind(this));
+    await this.transport.subscribe(
+      "registry:updates",
+      this.handleRegistryUpdate.bind(this),
+    );
 
     // Update transport with current peers
     this.syncPeers();
   }
 
-  async stop(): Promise<void> {
+  async disconnect(): Promise<void> {
     // Transport will handle unsubscribing when disconnected
+    this.registrations.clear();
   }
 
   /**
-   * Registers an actor name to a node ID.
+   * Registers an actor name to its location.
    * This updates the local registry and broadcasts to all peers.
-   * @param actorName The name of the actor
+   * @param name The name of the actor
    * @param nodeId The ID of the node where the actor resides
-   * @param generation Generation number (typically timestamp) for restart detection
+   * @param actorId The actor's unique instance ID
    */
-  register(actorName: string, nodeId: string, generation: number): void {
+  async register(name: string, nodeId: string, actorId: string): Promise<void> {
     this.localClock.increment(this.nodeId);
 
     const registration: ActorRegistration = {
-      name: actorName,
+      name,
       nodeId,
-      generation,
+      actorId,
+      generation: Date.now(),
       vectorClock: this.localClock.clone(),
     };
 
-    this.registrations.set(actorName, registration);
+    this.registrations.set(name, registration);
 
     // Publish to all peers
-    this.transport.publish('registry:updates', {
-      type: 'register',
+    this.transport.publish("registry:updates", {
+      type: "register",
       registration: this.serializeRegistration(registration),
     });
 
-    this.emit('actor_registered', registration);
+    this.emit("actor_registered", registration);
   }
 
   /**
    * Unregisters an actor name from the registry.
-   * @param actorName The name of the actor to unregister
+   * @param name The name of the actor to unregister
    */
-  unregister(actorName: string): void {
-    const existing = this.registrations.get(actorName);
+  async unregister(name: string): Promise<void> {
+    const existing = this.registrations.get(name);
     if (!existing) return;
 
     this.localClock.increment(this.nodeId);
 
     const update: RegistryUpdate = {
-      type: 'unregister',
+      type: "unregister",
       registration: {
         ...existing,
         vectorClock: this.localClock.clone(),
       },
     };
 
-    this.registrations.delete(actorName);
-    this.transport.publish('registry:updates', {
-      type: 'unregister',
+    this.registrations.delete(name);
+    this.transport.publish("registry:updates", {
+      type: "unregister",
       registration: this.serializeRegistration(update.registration),
     });
 
-    this.emit('actor_unregistered', actorName);
+    this.emit("actor_unregistered", name);
   }
 
   /**
-   * Looks up the node ID for a given actor name.
-   * @param actorName The name of the actor
-   * @returns The node ID, or null if not found
+   * Looks up the location for a given actor name.
+   * @param name The name of the actor
+   * @returns The actor location, or null if not found
    */
-  lookup(actorName: string): string | null {
-    return this.registrations.get(actorName)?.nodeId || null;
+  async lookup(name: string): Promise<ActorLocation | null> {
+    const reg = this.registrations.get(name);
+    if (!reg) return null;
+    return { nodeId: reg.nodeId, actorId: reg.actorId };
   }
 
   /**
@@ -130,7 +137,7 @@ export class RegistryGossip extends EventEmitter {
    * @param nodeId The ID of the node
    * @returns An array of actor names
    */
-  getNodeActors(nodeId: string): string[] {
+  async getNodeActors(nodeId: string): Promise<string[]> {
     const actors: string[] = [];
     for (const [name, reg] of this.registrations.entries()) {
       if (reg.nodeId === nodeId) {
@@ -151,16 +158,16 @@ export class RegistryGossip extends EventEmitter {
     const update: RegistryUpdate = message;
     const registration = this.deserializeRegistration(update.registration);
 
-    if (update.type === 'unregister') {
+    if (update.type === "unregister") {
       // Remove from local registry
       const existing = this.registrations.get(registration.name);
       if (existing) {
         // Only remove if the incoming unregister is newer
         const cmp = registration.vectorClock.compare(existing.vectorClock);
-        if (cmp === 'after' || cmp === 'concurrent') {
+        if (cmp === "after" || cmp === "concurrent") {
           this.registrations.delete(registration.name);
           this.localClock.merge(registration.vectorClock);
-          this.emit('actor_unregistered', registration.name);
+          this.emit("actor_unregistered", registration.name);
         }
       }
       return;
@@ -172,29 +179,31 @@ export class RegistryGossip extends EventEmitter {
       // New actor
       this.registrations.set(registration.name, registration);
       this.localClock.merge(registration.vectorClock);
-      this.emit('actor_registered', registration);
+      this.emit("actor_registered", registration);
       return;
     }
 
     // Conflict resolution using vector clocks
     const cmp = registration.vectorClock.compare(existing.vectorClock);
 
-    if (cmp === 'after') {
+    if (cmp === "after") {
       // Incoming is newer
       this.registrations.set(registration.name, registration);
       this.localClock.merge(registration.vectorClock);
-      this.emit('actor_updated', registration);
-    } else if (cmp === 'concurrent') {
+      this.emit("actor_updated", registration);
+    } else if (cmp === "concurrent") {
       // Tie-breaker: higher generation wins, then higher nodeId
       if (registration.generation > existing.generation) {
         this.registrations.set(registration.name, registration);
         this.localClock.merge(registration.vectorClock);
-        this.emit('actor_updated', registration);
-      } else if (registration.generation === existing.generation &&
-                 registration.nodeId > existing.nodeId) {
+        this.emit("actor_updated", registration);
+      } else if (
+        registration.generation === existing.generation &&
+        registration.nodeId > existing.nodeId
+      ) {
         this.registrations.set(registration.name, registration);
         this.localClock.merge(registration.vectorClock);
-        this.emit('actor_updated', registration);
+        this.emit("actor_updated", registration);
       }
     }
     // If 'before', ignore (we have newer version)
@@ -212,7 +221,7 @@ export class RegistryGossip extends EventEmitter {
 
     for (const name of actorsToRemove) {
       this.registrations.delete(name);
-      this.emit('actor_unregistered', name);
+      this.emit("actor_unregistered", name);
     }
 
     this.syncPeers();
@@ -224,8 +233,8 @@ export class RegistryGossip extends EventEmitter {
     // Anti-entropy: send full state to new peer
     // The new peer will merge with its own state
     for (const reg of this.registrations.values()) {
-      this.transport.publish('registry:updates', {
-        type: 'register',
+      this.transport.publish("registry:updates", {
+        type: "register",
         registration: this.serializeRegistration(reg),
       });
     }
@@ -233,7 +242,10 @@ export class RegistryGossip extends EventEmitter {
 
   private syncPeers(): void {
     const peers = this.membership.getLivePeers();
-    const peerList: Array<[string, string]> = peers.map(p => [p.id, p.address]);
+    const peerList: Array<[string, string]> = peers.map((p) => [
+      p.id,
+      p.address,
+    ]);
     this.transport.updatePeers(peerList);
   }
 
@@ -241,6 +253,7 @@ export class RegistryGossip extends EventEmitter {
     return {
       name: reg.name,
       nodeId: reg.nodeId,
+      actorId: reg.actorId,
       generation: reg.generation,
       vectorClock: reg.vectorClock.toJSON(),
     };
@@ -250,6 +263,7 @@ export class RegistryGossip extends EventEmitter {
     return {
       name: data.name,
       nodeId: data.nodeId,
+      actorId: data.actorId,
       generation: data.generation,
       vectorClock: VectorClock.fromJSON(data.vectorClock),
     };

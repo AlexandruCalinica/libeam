@@ -206,8 +206,8 @@ describe("ZeroMQ ActorSystem Integration", () => {
     registryGossip1 = new RegistryGossip("node1", transport1, cluster1);
     registryGossip2 = new RegistryGossip("node2", transport2, cluster2);
 
-    await registryGossip1.start();
-    await registryGossip2.start();
+    await registryGossip1.connect();
+    await registryGossip2.connect();
 
     const registry1 = new GossipRegistry(registryGossip1);
     const registry2 = new GossipRegistry(registryGossip2);
@@ -236,7 +236,8 @@ describe("ZeroMQ ActorSystem Integration", () => {
     await new Promise((r) => setTimeout(r, 200));
 
     // Verify registry propagated
-    expect(registryGossip2.lookup("counter")).toBe("node1");
+    const location = await registryGossip2.lookup("counter");
+    expect(location?.nodeId).toBe("node1");
 
     // Create reference from node2
     const remoteCounter = system2.getRef(

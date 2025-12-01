@@ -1,27 +1,30 @@
 // src/gossip_registry.ts
 
-import { Registry } from './registry';
-import { RegistryGossip } from './registry_gossip';
+import { Registry, ActorLocation } from "./registry";
+import { RegistryGossip } from "./registry_gossip";
 
 /**
  * A Registry implementation backed by RegistryGossip.
  *
  * This adapter allows the gossip-based registry to be used anywhere
  * the Registry interface is expected (e.g., in ActorSystem).
+ *
+ * Note: RegistryGossip now implements Registry directly, so this adapter
+ * is primarily for backwards compatibility or if you need to wrap
+ * an existing RegistryGossip instance.
  */
 export class GossipRegistry implements Registry {
   constructor(private gossip: RegistryGossip) {}
 
-  async register(name: string, nodeId: string): Promise<void> {
-    // Use current timestamp as generation for actor lifecycle tracking
-    this.gossip.register(name, nodeId, Date.now());
+  async register(name: string, nodeId: string, actorId: string): Promise<void> {
+    return this.gossip.register(name, nodeId, actorId);
   }
 
   async unregister(name: string): Promise<void> {
-    this.gossip.unregister(name);
+    return this.gossip.unregister(name);
   }
 
-  async lookup(name: string): Promise<string | null> {
+  async lookup(name: string): Promise<ActorLocation | null> {
     return this.gossip.lookup(name);
   }
 
@@ -30,10 +33,10 @@ export class GossipRegistry implements Registry {
   }
 
   async connect(): Promise<void> {
-    // Connection is handled by the RegistryGossip and Transport layers
+    return this.gossip.connect();
   }
 
   async disconnect(): Promise<void> {
-    // Disconnection is handled by the RegistryGossip and Transport layers
+    return this.gossip.disconnect();
   }
 }

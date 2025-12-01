@@ -1,16 +1,27 @@
 // src/registry.ts
 
 /**
- * A distributed registry for mapping actor names to node IDs.
+ * Information about a registered actor's location.
+ */
+export interface ActorLocation {
+  /** The node ID where the actor resides */
+  nodeId: string;
+  /** The actor's unique instance ID */
+  actorId: string;
+}
+
+/**
+ * A distributed registry for mapping actor names to their locations.
  */
 export interface Registry {
   /**
-   * Registers an actor name to a node ID.
+   * Registers an actor name to its location.
    * This will overwrite any existing registration for the same name.
    * @param name The name of the actor.
    * @param nodeId The ID of the node where the actor resides.
+   * @param actorId The actor's unique instance ID.
    */
-  register(name: string, nodeId: string): Promise<void>;
+  register(name: string, nodeId: string, actorId: string): Promise<void>;
 
   /**
    * Unregisters an actor name.
@@ -19,11 +30,11 @@ export interface Registry {
   unregister(name: string): Promise<void>;
 
   /**
-   * Looks up the node ID for a given actor name.
+   * Looks up the location for a given actor name.
    * @param name The name of the actor.
-   * @returns The node ID, or null if the actor is not registered.
+   * @returns The actor location, or null if the actor is not registered.
    */
-  lookup(name: string): Promise<string | null>;
+  lookup(name: string): Promise<ActorLocation | null>;
 
   /**
    * Retrieves all actor names registered to a specific node.

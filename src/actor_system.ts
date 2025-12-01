@@ -333,7 +333,7 @@ export class ActorSystem implements HealthCheckable {
       this.actorMetadata.set(instanceId, { actorClass, options });
 
       if (name) {
-        this.registry.register(name, this.id);
+        this.registry.register(name, this.id, instanceId);
       }
 
       Promise.resolve(actor.init(...(args || []))).catch((err) => {
@@ -409,7 +409,7 @@ export class ActorSystem implements HealthCheckable {
     parentActor.context.childOrder.push(actorRef);
 
     if (name) {
-      this.registry.register(name, this.id);
+      this.registry.register(name, this.id, instanceId);
     }
 
     Promise.resolve(actor.init(...(args || []))).catch((err) => {
@@ -428,6 +428,36 @@ export class ActorSystem implements HealthCheckable {
   }
 
   getRef(actorId: ActorId): ActorRef {
+    return new ActorRef(actorId, this);
+  }
+
+  /**
+   * Gets an ActorRef by the actor's registered name.
+   * This works for both local and remote actors - the registry is consulted
+   * to find the actor's location.
+   *
+   * @param name The registered name of the actor
+   * @returns An ActorRef that can be used to send messages, or null if not found
+   *
+   * @example
+   * ```typescript
+   * // On node1: spawn a named actor
+   * node1.spawn(GreeterActor, { name: "greeter" });
+   *
+   * // On node2: get a reference to the remote actor
+   * const greeterRef = await node2.getActorByName("greeter");
+   * if (greeterRef) {
+   *   const reply = await greeterRef.call({ type: "greet", name: "World" });
+   * }
+   * ```
+   */
+  async getActorByName(name: string): Promise<ActorRef | null> {
+    const location = await this.registry.lookup(name);
+    if (!location) {
+      return null;
+    }
+
+    const actorId = new ActorId(location.nodeId, location.actorId, name);
     return new ActorRef(actorId, this);
   }
 
@@ -763,7 +793,8 @@ export class ActorSystem implements HealthCheckable {
       throw new SystemShuttingDownError("make calls");
     }
 
-    const nodeId = name ? await this.registry.lookup(name) : systemId;
+    const location = name ? await this.registry.lookup(name) : null;
+    const nodeId = location?.nodeId ?? systemId;
     if (!nodeId) {
       const error = name
         ? new RegistryLookupError(name)
@@ -808,7 +839,8 @@ export class ActorSystem implements HealthCheckable {
   async dispatchCast(actorId: ActorId, message: any): Promise<void> {
     const { id, name, systemId } = actorId;
 
-    const nodeId = name ? await this.registry.lookup(name) : systemId;
+    const location = name ? await this.registry.lookup(name) : null;
+    const nodeId = location?.nodeId ?? systemId;
     if (!nodeId) {
       const error = name
         ? new RegistryLookupError(name)

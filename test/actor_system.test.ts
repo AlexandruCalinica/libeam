@@ -237,14 +237,14 @@ describe("ActorSystem", () => {
       system.spawn(TestActor, { name: "named-actor", args: [{}] });
 
       // Verify it's registered
-      const nodeId = await registry.lookup("named-actor");
-      expect(nodeId).toBe("test-system");
+      const location = await registry.lookup("named-actor");
+      expect(location?.nodeId).toBe("test-system");
 
       await system.shutdown();
 
       // Verify it's unregistered
-      const nodeIdAfter = await registry.lookup("named-actor");
-      expect(nodeIdAfter).toBeNull();
+      const locationAfter = await registry.lookup("named-actor");
+      expect(locationAfter).toBeNull();
     });
 
     it("should be idempotent (multiple shutdown calls)", async () => {

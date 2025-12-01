@@ -1,13 +1,13 @@
 // src/in_memory_registry.ts
 
-import { Registry } from './registry';
+import { Registry, ActorLocation } from "./registry";
 
 /**
  * An in-memory implementation of the Registry interface.
  * It uses a simple Map to store actor locations.
  */
 export class InMemoryRegistry implements Registry {
-  private readonly registry = new Map<string, string>();
+  private readonly registry = new Map<string, ActorLocation>();
 
   async connect(): Promise<void> {
     return Promise.resolve();
@@ -18,22 +18,22 @@ export class InMemoryRegistry implements Registry {
     return Promise.resolve();
   }
 
-  async register(name: string, nodeId: string): Promise<void> {
-    this.registry.set(name, nodeId);
+  async register(name: string, nodeId: string, actorId: string): Promise<void> {
+    this.registry.set(name, { nodeId, actorId });
   }
 
   async unregister(name: string): Promise<void> {
     this.registry.delete(name);
   }
 
-  async lookup(name: string): Promise<string | null> {
+  async lookup(name: string): Promise<ActorLocation | null> {
     return this.registry.get(name) || null;
   }
 
   async getNodeActors(nodeId: string): Promise<string[]> {
     const actors: string[] = [];
-    for (const [name, id] of this.registry.entries()) {
-      if (id === nodeId) {
+    for (const [name, location] of this.registry.entries()) {
+      if (location.nodeId === nodeId) {
         actors.push(name);
       }
     }
