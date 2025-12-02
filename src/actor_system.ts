@@ -92,6 +92,29 @@ interface LinkEntry {
 }
 
 /**
+ * Information about a remote actor linked to a local actor.
+ * Stored on the node where the remote actor lives.
+ */
+interface RemoteLinkerInfo {
+  linkRefId: string;
+  linkerNodeId: string;
+  linkerActorId: string;
+  /** Whether the remote linker has trapExit enabled */
+  trapExit: boolean;
+}
+
+/**
+ * Information about a local actor linked to a remote actor.
+ * Stored on the node where the local actor lives.
+ */
+interface RemoteLinkEntry {
+  linkRef: LinkRef;
+  localActorRef: ActorRef;
+  remoteNodeId: string;
+  remoteActorId: string;
+}
+
+/**
  * Manages the lifecycle of all actors on a single node.
  */
 export class ActorSystem implements HealthCheckable {
@@ -112,6 +135,10 @@ export class ActorSystem implements HealthCheckable {
   private readonly remoteWatchers = new Map<string, Set<RemoteWatcherInfo>>();
   /** Map from watchRefId to RemoteWatchEntry (local actor watching remote actor) */
   private readonly remoteWatches = new Map<string, RemoteWatchEntry>();
+  /** Map from local actor ID to set of remote linkers (remote actors linked to this local actor) */
+  private readonly remoteLinkers = new Map<string, Set<RemoteLinkerInfo>>();
+  /** Map from linkRefId to RemoteLinkEntry (local actor linked to remote actor) */
+  private readonly remoteLinks = new Map<string, RemoteLinkEntry>();
   private readonly supervisor: Supervisor;
   private readonly childSupervisor: ChildSupervisor;
   private readonly transport: Transport;
@@ -778,20 +805,38 @@ export class ActorSystem implements HealthCheckable {
    * Create a bidirectional link between two actors.
    * When one actor terminates abnormally, the other will also terminate
    * (unless it has trapExit enabled, in which case it receives an ExitMessage).
-   * @param actor1Ref First actor
-   * @param actor2Ref Second actor
+   * Works for both local and remote actors.
+   * @param actor1Ref First actor (must be local)
+   * @param actor2Ref Second actor (can be local or remote)
    * @returns A LinkRef that can be used to unlink
    */
   link(actor1Ref: ActorRef, actor2Ref: ActorRef): LinkRef {
     const actor1Id = actor1Ref.id.id;
     const actor2Id = actor2Ref.id.id;
+    const actor1NodeId = actor1Ref.id.systemId;
+    const actor2NodeId = actor2Ref.id.systemId;
+
+    // Actor1 must be local (the linking actor)
+    if (actor1NodeId !== this.id) {
+      throw new Error(
+        `Cannot link from remote actor ${actor1Id}@${actor1NodeId}. The first actor must be local.`,
+      );
+    }
 
     const actor1 = this.actors.get(actor1Id);
-    const actor2 = this.actors.get(actor2Id);
-
     if (!actor1) {
       throw new ActorNotFoundError(actor1Id, this.id);
     }
+
+    // Check if actor2 is remote
+    const isRemote = actor2NodeId !== this.id;
+
+    if (isRemote) {
+      return this._setupRemoteLink(actor1Ref, actor2Ref, actor1);
+    }
+
+    // Local link
+    const actor2 = this.actors.get(actor2Id);
     if (!actor2) {
       throw new ActorNotFoundError(actor2Id, this.id);
     }
@@ -833,10 +878,107 @@ export class ActorSystem implements HealthCheckable {
   }
 
   /**
+   * Sets up a link to a remote actor.
+   * Sends an RPC to the remote node to register the link.
+   */
+  private _setupRemoteLink(
+    localActorRef: ActorRef,
+    remoteActorRef: ActorRef,
+    localActor: Actor,
+  ): LinkRef {
+    const remoteNodeId = remoteActorRef.id.systemId;
+    const remoteActorId = remoteActorRef.id.id;
+    const localActorId = localActorRef.id.id;
+
+    const linkId = uuidv4();
+    const linkRef = new LinkRef(linkId, localActorId, remoteActorId);
+
+    // Store local tracking for remote link
+    const remoteEntry: RemoteLinkEntry = {
+      linkRef,
+      localActorRef,
+      remoteNodeId,
+      remoteActorId,
+    };
+    this.remoteLinks.set(linkRef.id, remoteEntry);
+
+    // Add to linkedWith for the local actor
+    if (!this.linkedWith.has(localActorId)) {
+      this.linkedWith.set(localActorId, new Set());
+    }
+    this.linkedWith.get(localActorId)!.add(linkId);
+
+    // Store in local actor's context
+    localActor.context.links.set(linkId, linkRef);
+
+    this.log.debug("Setting up remote link", {
+      localActorId,
+      remoteActorId,
+      remoteNodeId,
+      linkRefId: linkRef.id,
+    });
+
+    // Send link request to remote node (fire-and-forget with async response handling)
+    this.transport
+      .request(
+        remoteNodeId,
+        {
+          type: "link:add",
+          linkRefId: linkRef.id,
+          linkerNodeId: this.id,
+          linkerActorId: localActorId,
+          linkedActorId: remoteActorId,
+          trapExit: localActor.context.trapExit,
+        },
+        5000,
+      )
+      .then((response: { success: boolean; alreadyDead?: boolean }) => {
+        if (response.alreadyDead) {
+          // Remote actor is already dead, send exit signal
+          this.log.debug("Remote linked actor already dead", {
+            remoteActorId,
+            remoteNodeId,
+          });
+          this._handleRemoteLinkExit({
+            type: "link:exit",
+            linkRefId: linkRef.id,
+            exitedActorId: remoteActorId,
+            reason: { type: "normal" },
+          });
+        }
+      })
+      .catch((err) => {
+        // Remote node unreachable - treat as if actor is dead
+        this.log.warn("Failed to setup remote link, treating as dead", {
+          remoteActorId,
+          remoteNodeId,
+          error: err.message,
+        });
+        this._handleRemoteLinkExit({
+          type: "link:exit",
+          linkRefId: linkRef.id,
+          exitedActorId: remoteActorId,
+          reason: { type: "error", error: err },
+        });
+      });
+
+    return linkRef;
+  }
+
+  /**
    * Remove a link between two actors.
+   * Works for both local and remote links.
    * @param linkRef The link reference returned by link()
    */
   unlink(linkRef: LinkRef): void {
+    // Check if this is a remote link first
+    const remoteEntry = this.remoteLinks.get(linkRef.id);
+    if (remoteEntry) {
+      this._unlinkRemote(linkRef, remoteEntry);
+      return;
+    }
+
+    // Local link
     const entry = this.links.get(linkRef.id);
     if (!entry) {
       return; // Already unlinked or never existed
@@ -884,15 +1026,70 @@ export class ActorSystem implements HealthCheckable {
   }
 
   /**
+   * Removes a remote link.
+   */
+  private _unlinkRemote(linkRef: LinkRef, remoteEntry: RemoteLinkEntry): void {
+    // Remove local tracking
+    this.remoteLinks.delete(linkRef.id);
+
+    // Remove from linkedWith for local actor
+    const localActorId = remoteEntry.localActorRef.id.id;
+    const links = this.linkedWith.get(localActorId);
+    if (links) {
+      links.delete(linkRef.id);
+      if (links.size === 0) {
+        this.linkedWith.delete(localActorId);
+      }
+    }
+
+    // Remove from local actor's context
+    const localActor = this.actors.get(localActorId);
+    if (localActor) {
+      localActor.context.links.delete(linkRef.id);
+    }
+
+    this.log.debug("Removing remote link", {
+      localActorId,
+      remoteActorId: remoteEntry.remoteActorId,
+      remoteNodeId: remoteEntry.remoteNodeId,
+      linkRefId: linkRef.id,
+    });
+
+    // Send unlink request to remote node (fire-and-forget)
+    this.transport.send(remoteEntry.remoteNodeId, {
+      type: "link:remove",
+      linkRefId: linkRef.id,
+      linkedActorId: remoteEntry.remoteActorId,
+    });
+  }
+
+  /**
    * Notify all linked actors that an actor has terminated.
    * Called internally when an actor stops or crashes.
    * If the linked actor has trapExit=true, it receives an ExitMessage.
    * Otherwise, the linked actor is also terminated.
+   * Works for both local and remote links.
    * @param actorRef The actor that terminated
    * @param reason The reason for termination
    */
   notifyLinkedActors(actorRef: ActorRef, reason: TerminationReason): void {
     const actorId = actorRef.id.id;
+
+    // Notify local linked actors
+    this._notifyLocalLinkedActors(actorRef, actorId, reason);
+
+    // Notify remote linked actors (actors on other nodes linked to this one)
+    this._notifyRemoteLinkers(actorId, reason);
+  }
+
+  /**
+   * Notify local actors linked to the terminated actor.
+   */
+  private _notifyLocalLinkedActors(
+    actorRef: ActorRef,
+    actorId: string,
+    reason: TerminationReason,
+  ): void {
     const linkRefIds = this.linkedWith.get(actorId);
 
     if (!linkRefIds || linkRefIds.size === 0) {
@@ -903,6 +1100,7 @@ export class ActorSystem implements HealthCheckable {
     const linkRefIdsCopy = Array.from(linkRefIds);
 
     for (const linkRefId of linkRefIdsCopy) {
+      // Check for local link
       const entry = this.links.get(linkRefId);
       if (entry) {
         // Find the other actor in the link
@@ -940,8 +1138,115 @@ export class ActorSystem implements HealthCheckable {
             }
           }
         }
+        continue;
+      }
+
+      // Check for remote link (this local actor linked to a remote actor)
+      const remoteEntry = this.remoteLinks.get(linkRefId);
+      if (remoteEntry) {
+        // Clean up and notify remote node
+        this._notifyRemoteLinkExit(remoteEntry, actorId, reason);
       }
     }
+  }
+
+  /**
+   * Notify remote nodes that a local actor they linked to has terminated.
+   */
+  private _notifyRemoteLinkers(
+    actorId: string,
+    reason: TerminationReason,
+  ): void {
+    const remoteLinkerSet = this.remoteLinkers.get(actorId);
+    if (!remoteLinkerSet || remoteLinkerSet.size === 0) {
+      return;
+    }
+
+    // Copy since we'll be modifying
+    const remoteLinkersCopy = Array.from(remoteLinkerSet);
+
+    for (const remoteLinker of remoteLinkersCopy) {
+      this._notifyRemoteLinker(remoteLinker, actorId, reason);
+
+      // Clean up
+      remoteLinkerSet.delete(remoteLinker);
+    }
+
+    if (remoteLinkerSet.size === 0) {
+      this.remoteLinkers.delete(actorId);
+    }
+  }
+
+  /**
+   * Send exit notification to a remote linker.
+   */
+  private _notifyRemoteLinker(
+    remoteLinker: RemoteLinkerInfo,
+    exitedActorId: string,
+    reason: TerminationReason,
+  ): void {
+    this.log.debug("Notifying remote linker of actor exit", {
+      linkerNodeId: remoteLinker.linkerNodeId,
+      linkerActorId: remoteLinker.linkerActorId,
+      exitedActorId,
+      reason: reason.type,
+    });
+
+    // Serialize the reason for transport
+    const serializedReason =
+      reason.type === "error"
+        ? { type: "error", errorMessage: reason.error?.message || "Unknown" }
+        : reason;
+
+    this.transport.send(remoteLinker.linkerNodeId, {
+      type: "link:exit",
+      linkRefId: remoteLinker.linkRefId,
+      exitedActorId,
+      reason: serializedReason,
+    });
+  }
+
+  /**
+   * Notify remote node that local actor linked to remote actor has exited.
+   * Also cleans up local tracking.
+   */
+  private _notifyRemoteLinkExit(
+    remoteEntry: RemoteLinkEntry,
+    exitedActorId: string,
+    reason: TerminationReason,
+  ): void {
+    // Clean up local tracking
+    this.remoteLinks.delete(remoteEntry.linkRef.id);
+
+    // Remove from linkedWith
+    const links = this.linkedWith.get(exitedActorId);
+    if (links) {
+      links.delete(remoteEntry.linkRef.id);
+      if (links.size === 0) {
+        this.linkedWith.delete(exitedActorId);
+      }
+    }
+
+    this.log.debug("Notifying remote node of local linker exit", {
+      localActorId: exitedActorId,
+      remoteActorId: remoteEntry.remoteActorId,
+      remoteNodeId: remoteEntry.remoteNodeId,
+      reason: reason.type,
+    });
+
+    // Serialize the reason for transport
+    const serializedReason =
+      reason.type === "error"
+        ? { type: "error", errorMessage: reason.error?.message || "Unknown" }
+        : reason;
+
+    // Send exit notification to remote node
+    this.transport.send(remoteEntry.remoteNodeId, {
+      type: "link:exit",
+      linkRefId: remoteEntry.linkRef.id,
+      exitedActorId,
+      reason: serializedReason,
+    });
   }
 
   /**
@@ -1676,6 +1981,11 @@ export class ActorSystem implements HealthCheckable {
       return this._handleRemoteWatchAdd(rpcMessage);
     }
 
+    // Handle link:add RPC
+    if (rpcMessage.type === "link:add") {
+      return this._handleRemoteLinkAdd(rpcMessage);
+    }
+
     // Handle actor call
     const { actorId, message } = rpcMessage;
     const actor = this.actors.get(actorId.id);
@@ -1843,6 +2153,185 @@ export class ActorSystem implements HealthCheckable {
   }
 
   /**
+   * Handles a remote link registration request.
+   * Called when another node wants to link to a local actor.
+   */
+  private _handleRemoteLinkAdd(request: {
+    type: "link:add";
+    linkRefId: string;
+    linkerNodeId: string;
+    linkerActorId: string;
+    linkedActorId: string;
+    trapExit: boolean;
+  }): { success: boolean; alreadyDead?: boolean } {
+    const { linkRefId, linkerNodeId, linkerActorId, linkedActorId, trapExit } =
+      request;
+
+    this.log.debug("Received remote link request", {
+      linkerNodeId,
+      linkerActorId,
+      linkedActorId,
+      linkRefId,
+      trapExit,
+    });
+
+    // Check if the linked actor exists
+    const linkedActor = this.actors.get(linkedActorId);
+    if (!linkedActor) {
+      // Actor is already dead
+      return { success: true, alreadyDead: true };
+    }
+
+    // Store the remote linker
+    let linkerSet = this.remoteLinkers.get(linkedActorId);
+    if (!linkerSet) {
+      linkerSet = new Set();
+      this.remoteLinkers.set(linkedActorId, linkerSet);
+    }
+
+    const linkerInfo: RemoteLinkerInfo = {
+      linkRefId,
+      linkerNodeId,
+      linkerActorId,
+      trapExit,
+    };
+    linkerSet.add(linkerInfo);
+
+    return { success: true };
+  }
+
+  /**
+   * Handles a remote link removal request.
+   * Called when another node cancels their link to a local actor.
+   */
+  private _handleRemoteLinkRemove(request: {
+    type: "link:remove";
+    linkRefId: string;
+    linkedActorId: string;
+  }): void {
+    const { linkRefId, linkedActorId } = request;
+
+    this.log.debug("Received remote link removal", {
+      linkedActorId,
+      linkRefId,
+    });
+
+    const linkerSet = this.remoteLinkers.get(linkedActorId);
+    if (!linkerSet) {
+      return;
+    }
+
+    // Find and remove the linker entry
+    for (const linker of linkerSet) {
+      if (linker.linkRefId === linkRefId) {
+        linkerSet.delete(linker);
+        break;
+      }
+    }
+
+    if (linkerSet.size === 0) {
+      this.remoteLinkers.delete(linkedActorId);
+    }
+  }
+
+  /**
+   * Handles an exit notification from a remote node.
+   * Called when a remote actor that we were linked to has exited.
+   */
+  private _handleRemoteLinkExit(notification: {
+    type: "link:exit";
+    linkRefId: string;
+    exitedActorId: string;
+    reason: any;
+  }): void {
+    const { linkRefId, exitedActorId, reason } = notification;
+
+    this.log.debug("Received remote link exit notification", {
+      exitedActorId,
+      linkRefId,
+      reason: reason?.type || reason,
+    });
+
+    // Find the remote link entry
+    const remoteEntry = this.remoteLinks.get(linkRefId);
+    if (!remoteEntry) {
+      // Link was already removed or never existed
+      return;
+    }
+
+    // Remove the remote link tracking
+    this.remoteLinks.delete(linkRefId);
+
+    // Remove from linkedWith
+    const localActorId = remoteEntry.localActorRef.id.id;
+    const links = this.linkedWith.get(localActorId);
+    if (links) {
+      links.delete(linkRefId);
+      if (links.size === 0) {
+        this.linkedWith.delete(localActorId);
+      }
+    }
+
+    // Get the local actor
+    const localActor = this.actors.get(localActorId);
+    if (!localActor) {
+      // Local actor is also gone
+      return;
+    }
+
+    // Remove from actor's context
+    localActor.context.links.delete(linkRefId);
+
+    // Deserialize the termination reason
+    const terminationReason: TerminationReason =
+      this._deserializeTerminationReason(reason);
+
+    // Create a pseudo ActorRef for the dead remote actor
+    const exitedActorRef = new ActorRef(
+      new ActorId(remoteEntry.remoteNodeId, exitedActorId, undefined),
+      this,
+    );
+
+    // Create a pseudo LinkRef for the exit message
+    const linkRef = new LinkRef(linkRefId, localActorId, exitedActorId);
+
+    if (localActor.context.trapExit) {
+      // Actor is trapping exits - send ExitMessage via handleInfo
+      const exitMessage: ExitMessage = {
+        type: "exit",
+        linkRef,
+        actorRef: exitedActorRef,
+        reason: terminationReason,
+      };
+
+      // Deliver via handleInfo asynchronously
+      Promise.resolve(localActor.handleInfo(exitMessage)).catch((err) => {
+        this.log.error("Error in handleInfo for remote EXIT message", err, {
+          localActorId,
+          exitedActorId,
+        });
+      });
+    } else {
+      // Actor is not trapping exits - terminate it if reason is abnormal
+      if (
+        terminationReason.type === "error" ||
+        terminationReason.type === "killed"
+      ) {
+        this.log.debug("Propagating remote exit to local actor", {
+          fromActorId: exitedActorId,
+          toActorId: localActorId,
+          reason: terminationReason.type,
+        });
+        // Create a linked exit error
+        const linkedError = new Error(
+          `Linked remote actor ${exitedActorId} terminated: ${terminationReason.type}`,
+        );
+        this.supervisor.handleCrash(remoteEntry.localActorRef, linkedError);
+      }
+    }
+  }
+
+  /**
    * Called when a remote node has left the cluster (crashed or graceful shutdown).
    * Notifies all local actors that were watching actors on the dead node.
    *
@@ -1856,6 +2345,19 @@ export class ActorSystem implements HealthCheckable {
   handleNodeFailure(deadNodeId: string): void {
     this.log.info("Handling node failure", { deadNodeId });
 
+    // Handle remote watches
+    this._handleNodeFailureForWatches(deadNodeId);
+
+    // Handle remote links
+    this._handleNodeFailureForLinks(deadNodeId);
+
+    this.log.debug("Node failure handling complete", { deadNodeId });
+  }
+
+  /**
+   * Handle node failure for remote watches.
+   */
+  private _handleNodeFailureForWatches(deadNodeId: string): void {
     // Find all remote watches pointing to the dead node
     const watchesToNotify: RemoteWatchEntry[] = [];
 
@@ -1865,57 +2367,52 @@ export class ActorSystem implements HealthCheckable {
       }
     }
 
-    if (watchesToNotify.length === 0) {
-      this.log.debug("No remote watches to notify for dead node", {
+    if (watchesToNotify.length > 0) {
+      this.log.info("Notifying watchers of node failure", {
         deadNodeId,
+        watchCount: watchesToNotify.length,
       });
-      return;
-    }
 
-    this.log.info("Notifying watchers of node failure", {
-      deadNodeId,
-      watchCount: watchesToNotify.length,
-    });
+      // Send DOWN messages for all watches to the dead node
+      for (const entry of watchesToNotify) {
+        // Remove from remoteWatches
+        this.remoteWatches.delete(entry.watchRef.id);
 
-    // Send DOWN messages for all watches to the dead node
-    for (const entry of watchesToNotify) {
-      // Remove from remoteWatches
-      this.remoteWatches.delete(entry.watchRef.id);
+        // Remove from watcher's context
+        const watcherActor = this.actors.get(entry.watcherRef.id.id);
+        if (!watcherActor) {
+          continue;
+        }
 
-      // Remove from watcher's context
-      const watcherActor = this.actors.get(entry.watcherRef.id.id);
-      if (!watcherActor) {
-        continue;
-      }
+        watcherActor.context.watches.delete(entry.watchRef.id);
 
-      watcherActor.context.watches.delete(entry.watchRef.id);
-
-      // Create a pseudo ActorRef for the dead remote actor
-      const watchedActorRef = new ActorRef(
-        new ActorId(entry.watchedNodeId, entry.watchedActorId, undefined),
-        this,
-      );
-
-      // Send DOWN message with 'noconnection' reason
-      const downMessage: DownMessage = {
-        type: "down",
-        watchRef: entry.watchRef,
-        actorRef: watchedActorRef,
-        reason: { type: "killed" }, // Node failure is treated as killed
-      };
-
-      // Deliver via handleInfo asynchronously
-      Promise.resolve(watcherActor.handleInfo(downMessage)).catch((err) => {
-        this.log.error(
-          "Error in handleInfo for node failure DOWN message",
-          err,
-          {
-            watcherId: entry.watcherRef.id.id,
-            watchedId: entry.watchedActorId,
-            deadNodeId,
-          },
+        // Create a pseudo ActorRef for the dead remote actor
+        const watchedActorRef = new ActorRef(
+          new ActorId(entry.watchedNodeId, entry.watchedActorId, undefined),
+          this,
         );
-      });
+
+        // Send DOWN message with 'noconnection' reason
+        const downMessage: DownMessage = {
+          type: "down",
+          watchRef: entry.watchRef,
+          actorRef: watchedActorRef,
+          reason: { type: "killed" }, // Node failure is treated as killed
+        };
+
+        // Deliver via handleInfo asynchronously
+        Promise.resolve(watcherActor.handleInfo(downMessage)).catch((err) => {
+          this.log.error(
+            "Error in handleInfo for node failure DOWN message",
+            err,
+            {
+              watcherId: entry.watcherRef.id.id,
+              watchedId: entry.watchedActorId,
+              deadNodeId,
+            },
+          );
+        });
+      }
     }
 
     // Also clean up any remote watchers from the dead node
@@ -1934,8 +2431,55 @@ export class ActorSystem implements HealthCheckable {
         this.remoteWatchers.delete(actorId);
       }
     }
+  }
 
-    this.log.debug("Node failure handling complete", { deadNodeId });
+  /**
+   * Handle node failure for remote links.
+   */
+  private _handleNodeFailureForLinks(deadNodeId: string): void {
+    // Find all remote links pointing to the dead node
+    const linksToNotify: RemoteLinkEntry[] = [];
+
+    for (const [linkRefId, entry] of this.remoteLinks.entries()) {
+      if (entry.remoteNodeId === deadNodeId) {
+        linksToNotify.push(entry);
+      }
+    }
+
+    if (linksToNotify.length > 0) {
+      this.log.info("Notifying linked actors of node failure", {
+        deadNodeId,
+        linkCount: linksToNotify.length,
+      });
+
+      // Send exit signals for all links to the dead node
+      for (const entry of linksToNotify) {
+        // Handle as if we received a link:exit message
+        this._handleRemoteLinkExit({
+          type: "link:exit",
+          linkRefId: entry.linkRef.id,
+          exitedActorId: entry.remoteActorId,
+          reason: { type: "killed" }, // Node failure is treated as killed
+        });
+      }
+    }
+
+    // Also clean up any remote linkers from the dead node
+    // (they were linked to our local actors, but can't receive notifications anymore)
+    for (const [actorId, linkerSet] of this.remoteLinkers.entries()) {
+      const toRemove: RemoteLinkerInfo[] = [];
+      for (const linker of linkerSet) {
+        if (linker.linkerNodeId === deadNodeId) {
+          toRemove.push(linker);
+        }
+      }
+      for (const linker of toRemove) {
+        linkerSet.delete(linker);
+      }
+      if (linkerSet.size === 0) {
+        this.remoteLinkers.delete(actorId);
+      }
+    }
   }
 
   private _handleRpcCast(rpcMessage: any): void {
@@ -1950,6 +2494,18 @@ export class ActorSystem implements HealthCheckable {
     // Handle watch:down message (remote actor died)
     if (type === "watch:down") {
       this._handleRemoteDown(rpcMessage);
+      return;
+    }
+
+    // Handle link:remove message
+    if (type === "link:remove") {
+      this._handleRemoteLinkRemove(rpcMessage);
+      return;
+    }
+
+    // Handle link:exit message (remote linked actor exited)
+    if (type === "link:exit") {
+      this._handleRemoteLinkExit(rpcMessage);
       return;
     }
 

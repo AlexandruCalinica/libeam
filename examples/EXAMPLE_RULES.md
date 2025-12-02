@@ -82,6 +82,23 @@ Examples should demonstrate proper error handling:
 - Demonstrate supervision strategies where relevant
 - Include cleanup in finally blocks or shutdown hooks
 
+### 9. Process Cleanup After Running Examples
+
+When running examples (especially during development/testing), ensure no hanging Node.js processes remain:
+
+```bash
+# After running examples, check for hanging processes
+ps aux | grep -E "tsx examples/" | grep -v grep
+
+# Kill any remaining processes
+pkill -f "tsx examples/"
+```
+
+This is particularly important for:
+- Examples that use timeouts or intervals
+- Distributed examples with multiple nodes
+- Examples that may not reach their cleanup code due to errors
+
 ## Example Template
 
 ```typescript
@@ -150,4 +167,6 @@ main().catch(console.error);
 | `message_stashing.ts` | Intermediate | Deferred message processing |
 | `actor_watching.ts` | Intermediate | Monitoring actor termination |
 | `actor_links.ts` | Intermediate | Bidirectional crash propagation with links |
+| `distributed_watching.ts` | Intermediate | Remote actor watching across nodes |
+| `distributed_linking.ts` | Intermediate | Remote actor linking with crash propagation |
 | `distributed_ping_pong.ts` | Advanced | Real distributed actors via ZeroMQ |
