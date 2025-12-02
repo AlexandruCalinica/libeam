@@ -64,6 +64,25 @@ interface WatchEntry {
 }
 
 /**
+ * Information about a remote actor watching a local actor.
+ */
+interface RemoteWatcherInfo {
+  watchRefId: string;
+  watcherNodeId: string;
+  watcherActorId: string;
+}
+
+/**
+ * Information about a local actor watching a remote actor.
+ */
+interface RemoteWatchEntry {
+  watchRef: WatchRef;
+  watcherRef: ActorRef;
+  watchedNodeId: string;
+  watchedActorId: string;
+}
+
+/**
  * Information about an active link between two actors.
  */
 interface LinkEntry {
@@ -89,6 +108,10 @@ export class ActorSystem implements HealthCheckable {
   private readonly links = new Map<string, LinkEntry>();
   /** Map from actor ID to set of linkRef IDs */
   private readonly linkedWith = new Map<string, Set<string>>();
+  /** Map from local watched actor ID to set of remote watchers */
+  private readonly remoteWatchers = new Map<string, Set<RemoteWatcherInfo>>();
+  /** Map from watchRefId to RemoteWatchEntry (local actor watching remote actor) */
+  private readonly remoteWatches = new Map<string, RemoteWatchEntry>();
   private readonly supervisor: Supervisor;
   private readonly childSupervisor: ChildSupervisor;
   private readonly transport: Transport;
@@ -528,6 +551,7 @@ export class ActorSystem implements HealthCheckable {
   /**
    * Start watching an actor for termination.
    * When the watched actor terminates, the watcher will receive a DownMessage via handleInfo().
+   * Works for both local and remote actors.
    * @param watcherRef The actor that wants to watch
    * @param watchedRef The actor to watch
    * @returns A WatchRef that can be used to cancel the watch
@@ -540,6 +564,15 @@ export class ActorSystem implements HealthCheckable {
       watchedRef.id.id,
     );
 
+    const watchedNodeId = watchedRef.id.systemId;
+    const isRemoteWatch = watchedNodeId !== this.id;
+
+    if (isRemoteWatch) {
+      // Remote watch: send request to remote node
+      return this._setupRemoteWatch(watchRef, watcherRef, watchedRef);
+    }
+
+    // Local watch (original logic)
     const entry: WatchEntry = {
       watchRef,
       watcherRef,
@@ -578,10 +611,99 @@ export class ActorSystem implements HealthCheckable {
   }
 
   /**
+   * Sets up a watch on a remote actor.
+   * Sends an RPC to the remote node to register the watch.
+   */
+  private _setupRemoteWatch(
+    watchRef: WatchRef,
+    watcherRef: ActorRef,
+    watchedRef: ActorRef,
+  ): WatchRef {
+    const watchedNodeId = watchedRef.id.systemId;
+    const watchedActorId = watchedRef.id.id;
+
+    // Store local tracking for remote watch
+    const remoteEntry: RemoteWatchEntry = {
+      watchRef,
+      watcherRef,
+      watchedNodeId,
+      watchedActorId,
+    };
+    this.remoteWatches.set(watchRef.id, remoteEntry);
+
+    // Store in watcher's context
+    const watcherActor = this.actors.get(watcherRef.id.id);
+    if (watcherActor) {
+      watcherActor.context.watches.set(watchRef.id, watchRef);
+    }
+
+    this.log.debug("Setting up remote watch", {
+      watcherId: watcherRef.id.id,
+      watchedId: watchedActorId,
+      watchedNodeId,
+      watchRefId: watchRef.id,
+    });
+
+    // Send watch request to remote node (fire-and-forget with async response handling)
+    this.transport
+      .request(
+        watchedNodeId,
+        {
+          type: "watch:add",
+          watchRefId: watchRef.id,
+          watcherNodeId: this.id,
+          watcherActorId: watcherRef.id.id,
+          watchedActorId,
+        },
+        5000,
+      )
+      .then((response: { success: boolean; alreadyDead?: boolean }) => {
+        if (response.alreadyDead) {
+          // Remote actor is already dead, send DOWN immediately
+          this.log.debug("Remote watched actor already dead", {
+            watchedActorId,
+            watchedNodeId,
+          });
+          this._handleRemoteDown({
+            type: "watch:down",
+            watchRefId: watchRef.id,
+            watchedActorId,
+            reason: { type: "normal" },
+          });
+        }
+      })
+      .catch((err) => {
+        // Remote node unreachable - treat as if actor is dead
+        this.log.warn("Failed to setup remote watch, treating as dead", {
+          watchedActorId,
+          watchedNodeId,
+          error: err.message,
+        });
+        this._handleRemoteDown({
+          type: "watch:down",
+          watchRefId: watchRef.id,
+          watchedActorId,
+          reason: { type: "error", error: err },
+        });
+      });
+
+    return watchRef;
+  }
+
+  /**
    * Stop watching an actor.
+   * Works for both local and remote watches.
    * @param watchRef The watch reference returned by watch()
    */
   unwatch(watchRef: WatchRef): void {
+    // Check if this is a remote watch first
+    const remoteEntry = this.remoteWatches.get(watchRef.id);
+    if (remoteEntry) {
+      this._unwatchRemote(watchRef, remoteEntry);
+      return;
+    }
+
+    // Local watch
     const entry = this.watches.get(watchRef.id);
     if (!entry) {
       return; // Already unwatched or never existed
@@ -610,6 +732,44 @@ export class ActorSystem implements HealthCheckable {
       watchedId: watchRef.watchedId,
       watchRefId: watchRef.id,
     });
+  }
+
+  /**
+   * Removes a remote watch.
+   */
+  private _unwatchRemote(
+    watchRef: WatchRef,
+    remoteEntry: RemoteWatchEntry,
+  ): void {
+    // Remove local tracking
+    this.remoteWatches.delete(watchRef.id);
+
+    // Remove from watcher's context
+    const watcherActor = this.actors.get(remoteEntry.watcherRef.id.id);
+    if (watcherActor) {
+      watcherActor.context.watches.delete(watchRef.id);
+    }
+
+    this.log.debug("Removing remote watch", {
+      watcherId: remoteEntry.watcherRef.id.id,
+      watchedId: remoteEntry.watchedActorId,
+      watchedNodeId: remoteEntry.watchedNodeId,
+      watchRefId: watchRef.id,
+    });
+
+    // Notify remote node to remove the watch (fire-and-forget)
+    this.transport
+      .send(remoteEntry.watchedNodeId, {
+        type: "watch:remove",
+        watchRefId: watchRef.id,
+        watchedActorId: remoteEntry.watchedActorId,
+      })
+      .catch((err) => {
+        // Ignore errors - remote node may be dead
+        this.log.debug("Failed to notify remote node of unwatch", {
+          error: err.message,
+        });
+      });
   }
 
   // ============ Link Management ============
@@ -881,28 +1041,91 @@ export class ActorSystem implements HealthCheckable {
   }
 
   /**
-   * Notify all watchers that an actor has terminated.
+   * Notify all watchers (local and remote) that an actor has terminated.
    * Called internally when an actor stops or crashes.
    * @param actorRef The actor that terminated
    * @param reason The reason for termination
    */
   notifyWatchers(actorRef: ActorRef, reason: TerminationReason): void {
-    const watchRefIds = this.watchedBy.get(actorRef.id.id);
-    if (!watchRefIds || watchRefIds.size === 0) {
-      return;
-    }
+    const actorId = actorRef.id.id;
 
-    // Copy the set since we'll be modifying it during iteration
-    const watchRefIdsCopy = Array.from(watchRefIds);
+    // Notify local watchers
+    const watchRefIds = this.watchedBy.get(actorId);
+    if (watchRefIds && watchRefIds.size > 0) {
+      // Copy the set since we'll be modifying it during iteration
+      const watchRefIdsCopy = Array.from(watchRefIds);
 
-    for (const watchRefId of watchRefIdsCopy) {
-      const entry = this.watches.get(watchRefId);
-      if (entry) {
-        this.sendDownMessage(entry.watchRef, actorRef, reason);
-        // Clean up the watch (it's a one-shot notification)
-        this.unwatch(entry.watchRef);
+      for (const watchRefId of watchRefIdsCopy) {
+        const entry = this.watches.get(watchRefId);
+        if (entry) {
+          this.sendDownMessage(entry.watchRef, actorRef, reason);
+          // Clean up the watch (it's a one-shot notification)
+          this.unwatch(entry.watchRef);
+        }
       }
     }
+
+    // Notify remote watchers
+    const remoteWatcherSet = this.remoteWatchers.get(actorId);
+    if (remoteWatcherSet && remoteWatcherSet.size > 0) {
+      // Copy since we'll be modifying during iteration
+      const remoteWatchersCopy = Array.from(remoteWatcherSet);
+
+      for (const remoteWatcher of remoteWatchersCopy) {
+        this._notifyRemoteWatcher(remoteWatcher, actorId, reason);
+        // Clean up remote watcher entry
+        remoteWatcherSet.delete(remoteWatcher);
+      }
+
+      if (remoteWatcherSet.size === 0) {
+        this.remoteWatchers.delete(actorId);
+      }
+    }
+  }
+
+  /**
+   * Sends a DOWN notification to a remote watcher.
+   */
+  private _notifyRemoteWatcher(
+    remoteWatcher: RemoteWatcherInfo,
+    watchedActorId: string,
+    reason: TerminationReason,
+  ): void {
+    this.log.debug("Notifying remote watcher of actor death", {
+      watcherNodeId: remoteWatcher.watcherNodeId,
+      watcherActorId: remoteWatcher.watcherActorId,
+      watchedActorId,
+      reason: reason.type,
+    });
+
+    // Send DOWN notification to remote node (fire-and-forget)
+    this.transport
+      .send(remoteWatcher.watcherNodeId, {
+        type: "watch:down",
+        watchRefId: remoteWatcher.watchRefId,
+        watchedActorId,
+        reason: this._serializeTerminationReason(reason),
+      })
+      .catch((err) => {
+        // Ignore errors - remote node may be dead
+        this.log.debug("Failed to notify remote watcher", {
+          watcherNodeId: remoteWatcher.watcherNodeId,
+          error: err.message,
+        });
+      });
+  }
+
+  /**
+   * Serializes a TerminationReason for transport (errors aren't serializable).
+   */
+  private _serializeTerminationReason(reason: TerminationReason): any {
+    if (reason.type === "error" && reason.error) {
+      return {
+        type: "error",
+        errorMessage: reason.error.message || String(reason.error),
+      };
+    }
+    return reason;
   }
 
   /**
@@ -1448,6 +1671,12 @@ export class ActorSystem implements HealthCheckable {
   }
 
   private async _handleRpcCall(rpcMessage: any): Promise<any> {
+    // Handle watch:add RPC
+    if (rpcMessage.type === "watch:add") {
+      return this._handleRemoteWatchAdd(rpcMessage);
+    }
+
+    // Handle actor call
     const { actorId, message } = rpcMessage;
     const actor = this.actors.get(actorId.id);
 
@@ -1457,8 +1686,272 @@ export class ActorSystem implements HealthCheckable {
     return actor.handleCall(message);
   }
 
+  /**
+   * Handles a remote watch registration request.
+   * Called when another node wants to watch a local actor.
+   */
+  private _handleRemoteWatchAdd(request: {
+    type: "watch:add";
+    watchRefId: string;
+    watcherNodeId: string;
+    watcherActorId: string;
+    watchedActorId: string;
+  }): { success: boolean; alreadyDead?: boolean } {
+    const { watchRefId, watcherNodeId, watcherActorId, watchedActorId } =
+      request;
+
+    this.log.debug("Received remote watch request", {
+      watcherNodeId,
+      watcherActorId,
+      watchedActorId,
+      watchRefId,
+    });
+
+    // Check if the watched actor exists
+    const watchedActor = this.actors.get(watchedActorId);
+    if (!watchedActor) {
+      // Actor is already dead
+      return { success: true, alreadyDead: true };
+    }
+
+    // Store the remote watcher
+    let watcherSet = this.remoteWatchers.get(watchedActorId);
+    if (!watcherSet) {
+      watcherSet = new Set();
+      this.remoteWatchers.set(watchedActorId, watcherSet);
+    }
+
+    const watcherInfo: RemoteWatcherInfo = {
+      watchRefId,
+      watcherNodeId,
+      watcherActorId,
+    };
+    watcherSet.add(watcherInfo);
+
+    return { success: true };
+  }
+
+  /**
+   * Handles a remote watch removal request.
+   * Called when another node cancels their watch on a local actor.
+   */
+  private _handleRemoteWatchRemove(request: {
+    type: "watch:remove";
+    watchRefId: string;
+    watchedActorId: string;
+  }): void {
+    const { watchRefId, watchedActorId } = request;
+
+    this.log.debug("Received remote watch removal", {
+      watchedActorId,
+      watchRefId,
+    });
+
+    const watcherSet = this.remoteWatchers.get(watchedActorId);
+    if (!watcherSet) {
+      return;
+    }
+
+    // Find and remove the watcher entry
+    for (const watcher of watcherSet) {
+      if (watcher.watchRefId === watchRefId) {
+        watcherSet.delete(watcher);
+        break;
+      }
+    }
+
+    if (watcherSet.size === 0) {
+      this.remoteWatchers.delete(watchedActorId);
+    }
+  }
+
+  /**
+   * Handles a DOWN notification from a remote node.
+   * Called when a remote actor that we were watching has died.
+   */
+  private _handleRemoteDown(notification: {
+    type: "watch:down";
+    watchRefId: string;
+    watchedActorId: string;
+    reason: any;
+  }): void {
+    const { watchRefId, watchedActorId, reason } = notification;
+
+    this.log.debug("Received remote DOWN notification", {
+      watchedActorId,
+      watchRefId,
+      reason: reason?.type || reason,
+    });
+
+    // Find the remote watch entry
+    const remoteEntry = this.remoteWatches.get(watchRefId);
+    if (!remoteEntry) {
+      // Watch was already removed or never existed
+      return;
+    }
+
+    // Remove the remote watch tracking
+    this.remoteWatches.delete(watchRefId);
+
+    // Remove from watcher's context
+    const watcherActor = this.actors.get(remoteEntry.watcherRef.id.id);
+    if (!watcherActor) {
+      // Watcher actor is also gone
+      return;
+    }
+
+    watcherActor.context.watches.delete(watchRefId);
+
+    // Deserialize the termination reason
+    const terminationReason: TerminationReason =
+      this._deserializeTerminationReason(reason);
+
+    // Create a pseudo ActorRef for the dead remote actor
+    const watchedActorRef = new ActorRef(
+      new ActorId(remoteEntry.watchedNodeId, watchedActorId, undefined),
+      this,
+    );
+
+    // Send DOWN message to the watcher
+    const downMessage: DownMessage = {
+      type: "down",
+      watchRef: remoteEntry.watchRef,
+      actorRef: watchedActorRef,
+      reason: terminationReason,
+    };
+
+    // Deliver via handleInfo asynchronously
+    Promise.resolve(watcherActor.handleInfo(downMessage)).catch((err) => {
+      this.log.error("Error in handleInfo for remote DOWN message", err, {
+        watcherId: remoteEntry.watcherRef.id.id,
+        watchedId: watchedActorId,
+      });
+    });
+  }
+
+  /**
+   * Deserializes a TerminationReason from transport.
+   */
+  private _deserializeTerminationReason(reason: any): TerminationReason {
+    if (reason?.type === "error" && reason.errorMessage) {
+      return {
+        type: "error",
+        error: new Error(reason.errorMessage),
+      };
+    }
+    return reason as TerminationReason;
+  }
+
+  /**
+   * Called when a remote node has left the cluster (crashed or graceful shutdown).
+   * Notifies all local actors that were watching actors on the dead node.
+   *
+   * This should be wired up to the membership layer's 'member_leave' event:
+   * ```typescript
+   * membership.on('member_leave', (nodeId) => system.handleNodeFailure(nodeId));
+   * ```
+   *
+   * @param deadNodeId The ID of the node that has left the cluster
+   */
+  handleNodeFailure(deadNodeId: string): void {
+    this.log.info("Handling node failure", { deadNodeId });
+
+    // Find all remote watches pointing to the dead node
+    const watchesToNotify: RemoteWatchEntry[] = [];
+
+    for (const [watchRefId, entry] of this.remoteWatches.entries()) {
+      if (entry.watchedNodeId === deadNodeId) {
+        watchesToNotify.push(entry);
+      }
+    }
+
+    if (watchesToNotify.length === 0) {
+      this.log.debug("No remote watches to notify for dead node", {
+        deadNodeId,
+      });
+      return;
+    }
+
+    this.log.info("Notifying watchers of node failure", {
+      deadNodeId,
+      watchCount: watchesToNotify.length,
+    });
+
+    // Send DOWN messages for all watches to the dead node
+    for (const entry of watchesToNotify) {
+      // Remove from remoteWatches
+      this.remoteWatches.delete(entry.watchRef.id);
+
+      // Remove from watcher's context
+      const watcherActor = this.actors.get(entry.watcherRef.id.id);
+      if (!watcherActor) {
+        continue;
+      }
+
+      watcherActor.context.watches.delete(entry.watchRef.id);
+
+      // Create a pseudo ActorRef for the dead remote actor
+      const watchedActorRef = new ActorRef(
+        new ActorId(entry.watchedNodeId, entry.watchedActorId, undefined),
+        this,
+      );
+
+      // Send DOWN message with 'noconnection' reason
+      const downMessage: DownMessage = {
+        type: "down",
+        watchRef: entry.watchRef,
+        actorRef: watchedActorRef,
+        reason: { type: "killed" }, // Node failure is treated as killed
+      };
+
+      // Deliver via handleInfo asynchronously
+      Promise.resolve(watcherActor.handleInfo(downMessage)).catch((err) => {
+        this.log.error(
+          "Error in handleInfo for node failure DOWN message",
+          err,
+          {
+            watcherId: entry.watcherRef.id.id,
+            watchedId: entry.watchedActorId,
+            deadNodeId,
+          },
+        );
+      });
+    }
+
+    // Also clean up any remote watchers from the dead node
+    // (they were watching our local actors, but can't receive notifications anymore)
+    for (const [actorId, watcherSet] of this.remoteWatchers.entries()) {
+      const toRemove: RemoteWatcherInfo[] = [];
+      for (const watcher of watcherSet) {
+        if (watcher.watcherNodeId === deadNodeId) {
+          toRemove.push(watcher);
+        }
+      }
+      for (const watcher of toRemove) {
+        watcherSet.delete(watcher);
+      }
+      if (watcherSet.size === 0) {
+        this.remoteWatchers.delete(actorId);
+      }
+    }
+
+    this.log.debug("Node failure handling complete", { deadNodeId });
+  }
+
   private _handleRpcCast(rpcMessage: any): void {
     const { type, actorId, message } = rpcMessage;
+
+    // Handle watch:remove message
+    if (type === "watch:remove") {
+      this._handleRemoteWatchRemove(rpcMessage);
+      return;
+    }
+
+    // Handle watch:down message (remote actor died)
+    if (type === "watch:down") {
+      this._handleRemoteDown(rpcMessage);
+      return;
+    }
 
     if (type === "spawn") {
       const className = rpcMessage.actorClassName;
