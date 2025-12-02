@@ -3,6 +3,7 @@ export * from "./errors";
 export * from "./health";
 export * from "./actor";
 export * from "./actor_system";
+export * from "./agent";
 export * from "./supervisor";
 export * from "./child_supervisor";
 export * from "./transport";

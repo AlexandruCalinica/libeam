@@ -11,6 +11,65 @@ An Erlang/OTP-inspired actor system for TypeScript. Build distributed, fault-tol
 - **Placement Strategies**: Control where actors are spawned (`local`, `round-robin`)
 - **Transport Abstraction**: Pluggable transport layer (in-memory for testing, ZeroMQ for production)
 
+## Elixir/OTP Parity
+
+libeam implements the core primitives from Elixir/OTP, adapted for the Node.js runtime.
+
+### Implemented
+
+| Feature | Elixir/OTP | libeam |
+|---------|------------|--------|
+| **Actor Model** |
+| Spawn processes | `spawn/1`, `GenServer.start/2` | `system.spawn()` |
+| Async messages | `send/2`, `GenServer.cast/2` | `ref.cast()` |
+| Sync calls | `GenServer.call/2` | `ref.call()` |
+| **GenServer Callbacks** |
+| `init/1` | Yes | `init()` |
+| `handle_call/3` | Yes | `handleCall()` |
+| `handle_cast/2` | Yes | `handleCast()` |
+| `handle_info/2` | Yes | `handleInfo()` |
+| `handle_continue/2` | Yes | `handleContinue()` |
+| `terminate/2` | Yes | `terminate()` |
+| Idle timeout | `{:noreply, state, timeout}` | `setIdleTimeout()` |
+| **Supervision** |
+| Supervisors | `Supervisor` | `Supervisor`, `ChildSupervisor` |
+| one-for-one | Yes | Yes |
+| one-for-all | Yes | Yes |
+| rest-for-one | Yes | Yes |
+| Max restarts | Yes | Yes |
+| **Process Features** |
+| Links | `Process.link/1` | `link()` |
+| Monitors | `Process.monitor/1` | `watch()` |
+| Trap exit | `Process.flag(:trap_exit, true)` | `setTrapExit()` |
+| Exit signals | `Process.exit/2` | `exit()` |
+| Timers | `Process.send_after/3` | `sendAfter()`, `sendInterval()` |
+| **Introspection** |
+| List children | `Supervisor.which_children/1` | `getChildren()` |
+| Count children | `Supervisor.count_children/1` | `countChildren()` |
+| **Abstractions** |
+| Agent | `Agent` | `Agent` |
+| **Distribution** |
+| Cluster membership | `:net_kernel` | `Cluster`, `GossipProtocol` |
+| Remote messaging | Transparent | Via `Transport` |
+| Registry | `Registry`, `:global` | `Registry`, `GossipRegistry` |
+
+### Not Implemented (Not Needed in Node.js)
+
+| Feature | Reason |
+|---------|--------|
+| `Task.async/await` | Use native `Promise` / `async-await` |
+| Selective receive | Not practical without BEAM VM |
+| Hot code upgrades | Use rolling deploys |
+| `Application` behaviour | Use standard Node.js entry points |
+| ETS/DETS | Use `Map` or external stores (Redis, etc.) |
+
+### Not Yet Implemented
+
+| Feature | Description |
+|---------|-------------|
+| Distributed monitors | Receive notifications when remote nodes go down |
+| Distributed links | Links that work across nodes |
+
 ## Installation
 
 ```bash

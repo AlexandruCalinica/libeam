@@ -69,8 +69,11 @@ export interface DownMessage {
  */
 export interface ExitMessage {
   type: "exit";
-  linkRef: LinkRef;
+  /** The link reference (present for link-based exits, undefined for explicit exit signals) */
+  linkRef?: LinkRef;
+  /** The actor that terminated or sent the exit signal */
   actorRef: ActorRef;
+  /** The reason for the exit */
   reason: TerminationReason;
 }
 
@@ -448,6 +451,38 @@ export abstract class Actor<TCast = any, TCall = any, TReply = any> {
     return this.context.trapExit;
   }
 
+  /**
+   * Send an exit signal to another actor.
+   *
+   * If the target actor is trapping exits (trapExit=true), it receives an
+   * ExitMessage via handleInfo(). Otherwise, the target actor terminates.
+   *
+   * Special reasons:
+   * - "normal": No effect unless target is linked (normal termination)
+   * - "kill": Always terminates the target, even if trapping exits
+   *
+   * @param actorRef The actor to send the exit signal to
+   * @param reason The reason for the exit ("normal", "kill", or custom string)
+   *
+   * @example
+   * ```typescript
+   * class ManagerActor extends Actor {
+   *   handleCast(message: any) {
+   *     if (message.type === "shutdown_worker") {
+   *       // Gracefully request worker to exit
+   *       this.exit(message.workerRef, "shutdown");
+   *     } else if (message.type === "kill_worker") {
+   *       // Force kill, ignores trapExit
+   *       this.exit(message.workerRef, "kill");
+   *     }
+   *   }
+   * }
+   * ```
+   */
+  protected exit(actorRef: ActorRef, reason: string = "normal"): void {
+    this.context.system.sendExit(this.self, actorRef, reason);
+  }
+
   // ============ Idle Timeout Methods ============
 
   /**
@@ -569,9 +604,18 @@ export abstract class Actor<TCast = any, TCall = any, TReply = any> {
 
   /**
    * Gets all children of this actor.
+   * Equivalent to Elixir's Supervisor.which_children/1.
    */
   protected getChildren(): ActorRef[] {
     return Array.from(this.context.children);
+  }
+
+  /**
+   * Gets the count of children of this actor.
+   * Equivalent to Elixir's Supervisor.count_children/1.
+   */
+  protected countChildren(): number {
+    return this.context.children.size;
   }
 
   // ============ Timer Methods ============

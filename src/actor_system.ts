@@ -788,7 +788,7 @@ export class ActorSystem implements HealthCheckable {
    * Send an EXIT message to a linked actor that is trapping exits.
    */
   private sendExitMessage(
-    linkRef: LinkRef,
+    linkRef: LinkRef | undefined,
     terminatedRef: ActorRef,
     targetActor: Actor,
     reason: TerminationReason,
@@ -807,6 +807,77 @@ export class ActorSystem implements HealthCheckable {
         terminatedActorId: terminatedRef.id.id,
       });
     });
+  }
+
+  /**
+   * Send an exit signal to another actor.
+   *
+   * If the target actor is trapping exits (trapExit=true), it receives an
+   * ExitMessage via handleInfo(). Otherwise, the target actor terminates.
+   *
+   * Special reasons:
+   * - "normal": No effect (actor continues running)
+   * - "kill": Always terminates the target, even if trapping exits
+   * - Other strings: Treated as error reasons
+   *
+   * @param senderRef The actor sending the exit signal
+   * @param targetRef The actor to send the exit signal to
+   * @param reason The reason for the exit
+   */
+  sendExit(senderRef: ActorRef, targetRef: ActorRef, reason: string): void {
+    const targetId = targetRef.id.id;
+    const targetActor = this.actors.get(targetId);
+
+    if (!targetActor) {
+      // Target doesn't exist, nothing to do
+      return;
+    }
+
+    // "normal" exit signal has no effect (unlike link-based normal exits)
+    if (reason === "normal") {
+      this.log.debug("Normal exit signal ignored", {
+        senderId: senderRef.id.id,
+        targetId,
+      });
+      return;
+    }
+
+    // "kill" always terminates, even if trapping exits
+    if (reason === "kill") {
+      this.log.debug("Kill signal received", {
+        senderId: senderRef.id.id,
+        targetId,
+      });
+      // Force stop the actor
+      this.stop(targetRef);
+      return;
+    }
+
+    // Other reasons: check if target is trapping exits
+    if (targetActor.context.trapExit) {
+      // Deliver as ExitMessage via handleInfo
+      const terminationReason: TerminationReason = { type: "killed" };
+      this.sendExitMessage(
+        undefined,
+        senderRef,
+        targetActor,
+        terminationReason,
+      );
+      this.log.debug("Exit signal delivered as message", {
+        senderId: senderRef.id.id,
+        targetId,
+        reason,
+      });
+    } else {
+      // Terminate the target actor
+      this.log.debug("Exit signal terminating actor", {
+        senderId: senderRef.id.id,
+        targetId,
+        reason,
+      });
+      const error = new Error(`Exit signal from ${senderRef.id.id}: ${reason}`);
+      this.supervisor.handleCrash(targetRef, error);
+    }
   }
 
   /**
