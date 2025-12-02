@@ -13,6 +13,27 @@ export class WatchRef {
 }
 
 /**
+ * Unique reference for a timer.
+ * Used to cancel a timer with cancelTimer().
+ */
+export class TimerRef {
+  constructor(
+    public readonly id: string,
+    public readonly actorId: string,
+    public readonly isInterval: boolean,
+  ) {}
+}
+
+/**
+ * Internal timer entry for tracking active timers.
+ */
+export interface TimerEntry {
+  ref: TimerRef;
+  handle: NodeJS.Timeout;
+  message: any;
+}
+
+/**
  * Reason for actor termination.
  */
 export type TerminationReason =
@@ -163,6 +184,8 @@ export interface ActorContext {
   stash: StashedMessage[];
   /** Current message being processed (set by system during dispatch) */
   currentMessage?: StashedMessage;
+  /** Active timers owned by this actor */
+  timers: Map<string, TimerEntry>;
 }
 
 /**
@@ -349,5 +372,110 @@ export abstract class Actor<TCast = any, TCall = any, TReply = any> {
    */
   protected getChildren(): ActorRef[] {
     return Array.from(this.context.children);
+  }
+
+  // ============ Timer Methods ============
+
+  /**
+   * Schedules a message to be sent to this actor after a delay.
+   * The message will be delivered via handleCast().
+   *
+   * @param message The message to send
+   * @param delayMs Delay in milliseconds
+   * @returns A TimerRef that can be used to cancel the timer
+   *
+   * @example
+   * ```typescript
+   * class MyActor extends Actor {
+   *   init() {
+   *     // Send a tick message to self after 1 second
+   *     this.sendAfter({ type: "tick" }, 1000);
+   *   }
+   *
+   *   handleCast(message: any) {
+   *     if (message.type === "tick") {
+   *       console.log("Timer fired!");
+   *     }
+   *   }
+   * }
+   * ```
+   */
+  protected sendAfter(message: TCast, delayMs: number): TimerRef {
+    return this.context.system.startActorTimer(
+      this.self,
+      message,
+      delayMs,
+      false,
+    );
+  }
+
+  /**
+   * Schedules a message to be sent to this actor repeatedly at an interval.
+   * The message will be delivered via handleCast().
+   *
+   * @param message The message to send
+   * @param intervalMs Interval in milliseconds
+   * @returns A TimerRef that can be used to cancel the timer
+   *
+   * @example
+   * ```typescript
+   * class HeartbeatActor extends Actor {
+   *   private intervalRef?: TimerRef;
+   *
+   *   init() {
+   *     // Send heartbeat every 5 seconds
+   *     this.intervalRef = this.sendInterval({ type: "heartbeat" }, 5000);
+   *   }
+   *
+   *   handleCast(message: any) {
+   *     if (message.type === "heartbeat") {
+   *       console.log("Heartbeat!");
+   *     }
+   *   }
+   * }
+   * ```
+   */
+  protected sendInterval(message: TCast, intervalMs: number): TimerRef {
+    return this.context.system.startActorTimer(
+      this.self,
+      message,
+      intervalMs,
+      true,
+    );
+  }
+
+  /**
+   * Cancels a timer previously started with sendAfter() or sendInterval().
+   *
+   * @param timerRef The timer reference returned by sendAfter() or sendInterval()
+   * @returns true if the timer was cancelled, false if it wasn't found
+   *
+   * @example
+   * ```typescript
+   * class MyActor extends Actor {
+   *   private timerRef?: TimerRef;
+   *
+   *   handleCast(message: any) {
+   *     if (message.type === "start") {
+   *       this.timerRef = this.sendAfter({ type: "timeout" }, 5000);
+   *     } else if (message.type === "cancel") {
+   *       if (this.timerRef) {
+   *         this.cancelTimer(this.timerRef);
+   *       }
+   *     }
+   *   }
+   * }
+   * ```
+   */
+  protected cancelTimer(timerRef: TimerRef): boolean {
+    return this.context.system.cancelActorTimer(this.self, timerRef);
+  }
+
+  /**
+   * Cancels all active timers for this actor.
+   * Useful in terminate() or when resetting actor state.
+   */
+  protected cancelAllTimers(): void {
+    this.context.system.cancelAllActorTimers(this.self);
   }
 }

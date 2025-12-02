@@ -5,6 +5,8 @@ import {
   ActorId,
   ActorRef,
   WatchRef,
+  TimerRef,
+  TimerEntry,
   TerminationReason,
   DownMessage,
   StashedMessage,
@@ -326,6 +328,7 @@ export class ActorSystem implements HealthCheckable {
         system: this,
         watches: new Map(),
         stash: [],
+        timers: new Map(),
       };
 
       this.actors.set(instanceId, actor);
@@ -394,6 +397,7 @@ export class ActorSystem implements HealthCheckable {
       system: this,
       watches: new Map(),
       stash: [],
+      timers: new Map(),
     };
 
     this.actors.set(instanceId, actor);
@@ -623,6 +627,143 @@ export class ActorSystem implements HealthCheckable {
     });
   }
 
+  // ============ Timer Management ============
+
+  /**
+   * Starts a timer that sends a message to an actor after a delay.
+   * Called internally by Actor.sendAfter() and Actor.sendInterval().
+   * @param actorRef The actor to send the message to
+   * @param message The message to send
+   * @param delayMs Delay in milliseconds
+   * @param isInterval If true, repeats at the interval; if false, fires once
+   * @returns A TimerRef that can be used to cancel the timer
+   */
+  startActorTimer(
+    actorRef: ActorRef,
+    message: any,
+    delayMs: number,
+    isInterval: boolean,
+  ): TimerRef {
+    const actorId = actorRef.id.id;
+    const actor = this.actors.get(actorId);
+
+    if (!actor) {
+      throw new ActorNotFoundError(actorId, this.id);
+    }
+
+    const timerId = uuidv4();
+    const timerRef = new TimerRef(timerId, actorId, isInterval);
+
+    const callback = () => {
+      // Check if actor still exists before sending
+      if (this.actors.has(actorId)) {
+        this.dispatchCast(actorRef.id, message);
+
+        // For one-shot timers, clean up after firing
+        if (!isInterval) {
+          actor.context.timers.delete(timerId);
+        }
+      } else {
+        // Actor is gone, clean up the interval if it's still running
+        if (isInterval) {
+          const entry = actor.context.timers.get(timerId);
+          if (entry) {
+            clearInterval(entry.handle);
+          }
+        }
+      }
+    };
+
+    const handle = isInterval
+      ? setInterval(callback, delayMs)
+      : setTimeout(callback, delayMs);
+
+    const entry: TimerEntry = {
+      ref: timerRef,
+      handle,
+      message,
+    };
+
+    actor.context.timers.set(timerId, entry);
+
+    this.log.debug("Timer started", {
+      actorId,
+      timerId,
+      delayMs,
+      isInterval,
+    });
+
+    return timerRef;
+  }
+
+  /**
+   * Cancels a timer for an actor.
+   * Called internally by Actor.cancelTimer().
+   * @param actorRef The actor that owns the timer
+   * @param timerRef The timer to cancel
+   * @returns true if the timer was cancelled, false if not found
+   */
+  cancelActorTimer(actorRef: ActorRef, timerRef: TimerRef): boolean {
+    const actorId = actorRef.id.id;
+    const actor = this.actors.get(actorId);
+
+    if (!actor) {
+      return false;
+    }
+
+    const entry = actor.context.timers.get(timerRef.id);
+    if (!entry) {
+      return false;
+    }
+
+    if (timerRef.isInterval) {
+      clearInterval(entry.handle);
+    } else {
+      clearTimeout(entry.handle);
+    }
+
+    actor.context.timers.delete(timerRef.id);
+
+    this.log.debug("Timer cancelled", {
+      actorId,
+      timerId: timerRef.id,
+    });
+
+    return true;
+  }
+
+  /**
+   * Cancels all timers for an actor.
+   * Called internally by Actor.cancelAllTimers() and during actor termination.
+   * @param actorRef The actor whose timers to cancel
+   */
+  cancelAllActorTimers(actorRef: ActorRef): void {
+    const actorId = actorRef.id.id;
+    const actor = this.actors.get(actorId);
+
+    if (!actor) {
+      return;
+    }
+
+    for (const entry of actor.context.timers.values()) {
+      if (entry.ref.isInterval) {
+        clearInterval(entry.handle);
+      } else {
+        clearTimeout(entry.handle);
+      }
+    }
+
+    const count = actor.context.timers.size;
+    actor.context.timers.clear();
+
+    if (count > 0) {
+      this.log.debug("All timers cancelled", {
+        actorId,
+        count,
+      });
+    }
+  }
+
   /**
    * (For testing) Gets the instance IDs of all local actors.
    */
@@ -677,6 +818,9 @@ export class ActorSystem implements HealthCheckable {
       for (const watchRef of actor.context.watches.values()) {
         this.unwatch(watchRef);
       }
+
+      // Cancel all active timers for this actor
+      this.cancelAllActorTimers(actorRef);
 
       // Notify watchers of this actor's termination
       this.notifyWatchers(actorRef, { type: "normal" });
@@ -765,6 +909,9 @@ export class ActorSystem implements HealthCheckable {
       for (const watchRef of actor.context.watches.values()) {
         this.unwatch(watchRef);
       }
+
+      // Cancel all active timers for this actor
+      this.cancelAllActorTimers(actorRef);
 
       // Optionally notify watchers (typically not done for restarts)
       if (notifyWatchers) {
