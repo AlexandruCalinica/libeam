@@ -142,8 +142,12 @@ main().catch(console.error);
 | File | Level | Demonstrates |
 |------|-------|--------------|
 | `typed_actors.ts` | Basic | Type-safe actors with generics |
+| `timers.ts` | Basic | Actor timers (sendAfter, sendInterval, cancelTimer) |
+| `handle_continue.ts` | Basic | Async post-init work with handleContinue |
+| `idle_timeout.ts` | Basic | Idle timeout for inactivity handling |
 | `chat.ts` | Intermediate | Multi-node chat with in-memory transport |
 | `supervision_tree.ts` | Intermediate | Parent-child supervision strategies |
 | `message_stashing.ts` | Intermediate | Deferred message processing |
 | `actor_watching.ts` | Intermediate | Monitoring actor termination |
+| `actor_links.ts` | Intermediate | Bidirectional crash propagation with links |
 | `distributed_ping_pong.ts` | Advanced | Real distributed actors via ZeroMQ |
