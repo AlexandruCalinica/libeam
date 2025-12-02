@@ -79,6 +79,8 @@ export class ChildSupervisor {
       });
       // Notify watchers that actor is being killed due to max restarts
       this.system.notifyWatchers(childRef, { type: "killed" });
+      // Notify linked actors - they may crash or receive exit message
+      this.system.notifyLinkedActors(childRef, { type: "killed" });
       await this.system.stop(childRef);
       return;
     }

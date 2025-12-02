@@ -5,10 +5,12 @@ import {
   ActorId,
   ActorRef,
   WatchRef,
+  LinkRef,
   TimerRef,
   TimerEntry,
   TerminationReason,
   DownMessage,
+  ExitMessage,
   StashedMessage,
   isInitContinue,
 } from "./actor";
@@ -61,6 +63,15 @@ interface WatchEntry {
 }
 
 /**
+ * Information about an active link between two actors.
+ */
+interface LinkEntry {
+  linkRef: LinkRef;
+  actor1Ref: ActorRef;
+  actor2Ref: ActorRef;
+}
+
+/**
  * Manages the lifecycle of all actors on a single node.
  */
 export class ActorSystem implements HealthCheckable {
@@ -73,6 +84,10 @@ export class ActorSystem implements HealthCheckable {
   private readonly watches = new Map<string, WatchEntry>();
   /** Map from watched actor ID to set of watchRef IDs */
   private readonly watchedBy = new Map<string, Set<string>>();
+  /** Map from linkRef.id to LinkEntry */
+  private readonly links = new Map<string, LinkEntry>();
+  /** Map from actor ID to set of linkRef IDs */
+  private readonly linkedWith = new Map<string, Set<string>>();
   private readonly supervisor: Supervisor;
   private readonly childSupervisor: ChildSupervisor;
   private readonly transport: Transport;
@@ -328,8 +343,10 @@ export class ActorSystem implements HealthCheckable {
         childOrder: [],
         system: this,
         watches: new Map(),
+        links: new Map(),
         stash: [],
         timers: new Map(),
+        trapExit: false,
       };
 
       this.actors.set(instanceId, actor);
@@ -404,8 +421,10 @@ export class ActorSystem implements HealthCheckable {
       childOrder: [],
       system: this,
       watches: new Map(),
+      links: new Map(),
       stash: [],
       timers: new Map(),
+      trapExit: false,
     };
 
     this.actors.set(instanceId, actor);
@@ -585,6 +604,203 @@ export class ActorSystem implements HealthCheckable {
       watcherId: watchRef.watcherId,
       watchedId: watchRef.watchedId,
       watchRefId: watchRef.id,
+    });
+  }
+
+  // ============ Link Management ============
+
+  /**
+   * Create a bidirectional link between two actors.
+   * When one actor terminates abnormally, the other will also terminate
+   * (unless it has trapExit enabled, in which case it receives an ExitMessage).
+   * @param actor1Ref First actor
+   * @param actor2Ref Second actor
+   * @returns A LinkRef that can be used to unlink
+   */
+  link(actor1Ref: ActorRef, actor2Ref: ActorRef): LinkRef {
+    const actor1Id = actor1Ref.id.id;
+    const actor2Id = actor2Ref.id.id;
+
+    const actor1 = this.actors.get(actor1Id);
+    const actor2 = this.actors.get(actor2Id);
+
+    if (!actor1) {
+      throw new ActorNotFoundError(actor1Id, this.id);
+    }
+    if (!actor2) {
+      throw new ActorNotFoundError(actor2Id, this.id);
+    }
+
+    const linkId = uuidv4();
+    const linkRef = new LinkRef(linkId, actor1Id, actor2Id);
+
+    const entry: LinkEntry = {
+      linkRef,
+      actor1Ref,
+      actor2Ref,
+    };
+
+    // Store the link
+    this.links.set(linkId, entry);
+
+    // Add to linkedWith maps for both actors
+    if (!this.linkedWith.has(actor1Id)) {
+      this.linkedWith.set(actor1Id, new Set());
+    }
+    this.linkedWith.get(actor1Id)!.add(linkId);
+
+    if (!this.linkedWith.has(actor2Id)) {
+      this.linkedWith.set(actor2Id, new Set());
+    }
+    this.linkedWith.get(actor2Id)!.add(linkId);
+
+    // Store in both actors' contexts
+    actor1.context.links.set(linkId, linkRef);
+    actor2.context.links.set(linkId, linkRef);
+
+    this.log.debug("Link created", {
+      actor1Id,
+      actor2Id,
+      linkRefId: linkId,
+    });
+
+    return linkRef;
+  }
+
+  /**
+   * Remove a link between two actors.
+   * @param linkRef The link reference returned by link()
+   */
+  unlink(linkRef: LinkRef): void {
+    const entry = this.links.get(linkRef.id);
+    if (!entry) {
+      return; // Already unlinked or never existed
+    }
+
+    const actor1Id = linkRef.actor1Id;
+    const actor2Id = linkRef.actor2Id;
+
+    // Remove from links map
+    this.links.delete(linkRef.id);
+
+    // Remove from linkedWith maps
+    const links1 = this.linkedWith.get(actor1Id);
+    if (links1) {
+      links1.delete(linkRef.id);
+      if (links1.size === 0) {
+        this.linkedWith.delete(actor1Id);
+      }
+    }
+
+    const links2 = this.linkedWith.get(actor2Id);
+    if (links2) {
+      links2.delete(linkRef.id);
+      if (links2.size === 0) {
+        this.linkedWith.delete(actor2Id);
+      }
+    }
+
+    // Remove from actors' contexts
+    const actor1 = this.actors.get(actor1Id);
+    if (actor1) {
+      actor1.context.links.delete(linkRef.id);
+    }
+
+    const actor2 = this.actors.get(actor2Id);
+    if (actor2) {
+      actor2.context.links.delete(linkRef.id);
+    }
+
+    this.log.debug("Link removed", {
+      actor1Id,
+      actor2Id,
+      linkRefId: linkRef.id,
+    });
+  }
+
+  /**
+   * Notify all linked actors that an actor has terminated.
+   * Called internally when an actor stops or crashes.
+   * If the linked actor has trapExit=true, it receives an ExitMessage.
+   * Otherwise, the linked actor is also terminated.
+   * @param actorRef The actor that terminated
+   * @param reason The reason for termination
+   */
+  notifyLinkedActors(actorRef: ActorRef, reason: TerminationReason): void {
+    const actorId = actorRef.id.id;
+    const linkRefIds = this.linkedWith.get(actorId);
+
+    if (!linkRefIds || linkRefIds.size === 0) {
+      return;
+    }
+
+    // Copy the set since we'll be modifying it during iteration
+    const linkRefIdsCopy = Array.from(linkRefIds);
+
+    for (const linkRefId of linkRefIdsCopy) {
+      const entry = this.links.get(linkRefId);
+      if (entry) {
+        // Find the other actor in the link
+        const otherActorId =
+          entry.actor1Ref.id.id === actorId
+            ? entry.actor2Ref.id.id
+            : entry.actor1Ref.id.id;
+        const otherActorRef =
+          entry.actor1Ref.id.id === actorId ? entry.actor2Ref : entry.actor1Ref;
+
+        // Clean up the link BEFORE propagating crash to prevent infinite loops
+        // When actor A crashes and notifies B, unlinking first ensures B's crash
+        // won't try to notify the already-dead A
+        this.unlink(entry.linkRef);
+
+        const otherActor = this.actors.get(otherActorId);
+        if (otherActor) {
+          if (otherActor.context.trapExit) {
+            // Actor is trapping exits - send ExitMessage via handleInfo
+            this.sendExitMessage(entry.linkRef, actorRef, otherActor, reason);
+          } else {
+            // Actor is not trapping exits - terminate it
+            // Only propagate if the original termination was abnormal
+            if (reason.type === "error" || reason.type === "killed") {
+              this.log.debug("Propagating exit to linked actor", {
+                fromActorId: actorId,
+                toActorId: otherActorId,
+                reason: reason.type,
+              });
+              // Create a linked exit error
+              const linkedError = new Error(
+                `Linked actor ${actorId} terminated: ${reason.type}`,
+              );
+              this.supervisor.handleCrash(otherActorRef, linkedError);
+            }
+          }
+        }
+      }
+    }
+  }
+
+  /**
+   * Send an EXIT message to a linked actor that is trapping exits.
+   */
+  private sendExitMessage(
+    linkRef: LinkRef,
+    terminatedRef: ActorRef,
+    targetActor: Actor,
+    reason: TerminationReason,
+  ): void {
+    const exitMessage: ExitMessage = {
+      type: "exit",
+      linkRef,
+      actorRef: terminatedRef,
+      reason,
+    };
+
+    // Deliver via handleInfo asynchronously
+    Promise.resolve(targetActor.handleInfo(exitMessage)).catch((err) => {
+      this.log.error("Error in handleInfo for EXIT message", err, {
+        targetActorId: targetActor.self.id.id,
+        terminatedActorId: terminatedRef.id.id,
+      });
     });
   }
 
@@ -840,6 +1056,10 @@ export class ActorSystem implements HealthCheckable {
       // Notify watchers of this actor's termination
       this.notifyWatchers(actorRef, { type: "normal" });
 
+      // Notify linked actors (normal termination doesn't propagate crashes)
+      // notifyLinkedActors handles unlinking internally
+      this.notifyLinkedActors(actorRef, { type: "normal" });
+
       if (name) {
         await this.registry.unregister(name);
       }
@@ -923,6 +1143,11 @@ export class ActorSystem implements HealthCheckable {
       // Clean up any watches this actor had on other actors
       for (const watchRef of actor.context.watches.values()) {
         this.unwatch(watchRef);
+      }
+
+      // Clean up any links this actor had with other actors
+      for (const linkRef of actor.context.links.values()) {
+        this.unlink(linkRef);
       }
 
       // Cancel all active timers for this actor

@@ -71,6 +71,8 @@ export class Supervisor {
       });
       // Notify watchers that actor is being killed due to max restarts
       this.system.notifyWatchers(actorRef, { type: "killed" });
+      // Notify linked actors - they may crash or receive exit message
+      this.system.notifyLinkedActors(actorRef, { type: "killed" });
       this.system.stop(actorRef);
       this.restartCounts.delete(actorId);
       return;
@@ -102,6 +104,8 @@ export class Supervisor {
         this.log.info("Stopping actor", { actorId });
         // Notify watchers with the error reason
         this.system.notifyWatchers(actorRef, { type: "error", error });
+        // Notify linked actors - they may crash or receive exit message
+        this.system.notifyLinkedActors(actorRef, { type: "error", error });
         this.system.stop(actorRef);
         break;
     }

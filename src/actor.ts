@@ -25,6 +25,18 @@ export class TimerRef {
 }
 
 /**
+ * Unique reference for a link between two actors.
+ * Used to unlink actors with unlink().
+ */
+export class LinkRef {
+  constructor(
+    public readonly id: string,
+    public readonly actor1Id: string,
+    public readonly actor2Id: string,
+  ) {}
+}
+
+/**
  * Internal timer entry for tracking active timers.
  */
 export interface TimerEntry {
@@ -52,9 +64,20 @@ export interface DownMessage {
 }
 
 /**
+ * Message sent to linked actors when a linked actor terminates.
+ * If trapExit is false, the actor will crash. If true, it receives this message via handleInfo().
+ */
+export interface ExitMessage {
+  type: "exit";
+  linkRef: LinkRef;
+  actorRef: ActorRef;
+  reason: TerminationReason;
+}
+
+/**
  * System info messages delivered to actors via handleInfo().
  */
-export type InfoMessage = DownMessage;
+export type InfoMessage = DownMessage | ExitMessage;
 
 /**
  * Strategy for supervising child actors.
@@ -195,12 +218,16 @@ export interface ActorContext {
   system: ActorSystem;
   /** Active watches this actor has on other actors */
   watches: Map<string, WatchRef>;
+  /** Active links this actor has with other actors */
+  links: Map<string, LinkRef>;
   /** Stashed messages waiting to be processed later */
   stash: StashedMessage[];
   /** Current message being processed (set by system during dispatch) */
   currentMessage?: StashedMessage;
   /** Active timers owned by this actor */
   timers: Map<string, TimerEntry>;
+  /** Whether this actor traps exit signals from linked actors */
+  trapExit: boolean;
 }
 
 /**
@@ -336,6 +363,76 @@ export abstract class Actor<TCast = any, TCall = any, TReply = any> {
   protected unwatch(watchRef: WatchRef): void {
     this.context.system.unwatch(watchRef);
   }
+
+  // ============ Link Methods ============
+
+  /**
+   * Create a bidirectional link with another actor.
+   * When either actor terminates abnormally, the other will also terminate
+   * (unless trapExit is enabled, in which case it receives an ExitMessage).
+   *
+   * @param actorRef The actor to link with
+   * @returns A LinkRef that can be used to unlink
+   *
+   * @example
+   * ```typescript
+   * class WorkerManager extends Actor {
+   *   init() {
+   *     const worker = this.spawn(WorkerActor);
+   *     this.link(worker);  // If worker crashes, manager crashes too
+   *   }
+   * }
+   * ```
+   */
+  protected link(actorRef: ActorRef): LinkRef {
+    return this.context.system.link(this.self, actorRef);
+  }
+
+  /**
+   * Remove a link with another actor.
+   * @param linkRef The link reference returned by link()
+   */
+  protected unlink(linkRef: LinkRef): void {
+    this.context.system.unlink(linkRef);
+  }
+
+  /**
+   * Enable or disable exit trapping.
+   * When trapExit is true, exit signals from linked actors are delivered as
+   * ExitMessage via handleInfo() instead of causing this actor to crash.
+   *
+   * @param trap Whether to trap exit signals
+   *
+   * @example
+   * ```typescript
+   * class Supervisor extends Actor {
+   *   init() {
+   *     this.setTrapExit(true);  // Handle exits gracefully
+   *     const worker = this.spawn(WorkerActor);
+   *     this.link(worker);
+   *   }
+   *
+   *   handleInfo(message: InfoMessage) {
+   *     if (message.type === "exit") {
+   *       console.log("Worker crashed, restarting...");
+   *       // Handle the exit gracefully
+   *     }
+   *   }
+   * }
+   * ```
+   */
+  protected setTrapExit(trap: boolean): void {
+    this.context.trapExit = trap;
+  }
+
+  /**
+   * Returns whether this actor is trapping exit signals.
+   */
+  protected isTrapExit(): boolean {
+    return this.context.trapExit;
+  }
+
+  // ============ Stash Methods ============
 
   /**
    * Stash the current message for later processing.
