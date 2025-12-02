@@ -10,6 +10,7 @@ import {
   TerminationReason,
   DownMessage,
   StashedMessage,
+  isInitContinue,
 } from "./actor";
 import { v4 as uuidv4 } from "uuid";
 import { Supervisor, SupervisionOptions } from "./supervisor";
@@ -339,9 +340,16 @@ export class ActorSystem implements HealthCheckable {
         this.registry.register(name, this.id, instanceId);
       }
 
-      Promise.resolve(actor.init(...(args || []))).catch((err) => {
-        this.supervisor.handleCrash(actorRef, err);
-      });
+      Promise.resolve(actor.init(...(args || [])))
+        .then((result) => {
+          // Check if init returned a continue signal
+          if (isInitContinue(result)) {
+            return Promise.resolve(actor.handleContinue(result.continue));
+          }
+        })
+        .catch((err) => {
+          this.supervisor.handleCrash(actorRef, err);
+        });
 
       this.processMailbox(instanceId);
     } else {
@@ -416,9 +424,16 @@ export class ActorSystem implements HealthCheckable {
       this.registry.register(name, this.id, instanceId);
     }
 
-    Promise.resolve(actor.init(...(args || []))).catch((err) => {
-      this.supervisor.handleCrash(actorRef, err);
-    });
+    Promise.resolve(actor.init(...(args || [])))
+      .then((result) => {
+        // Check if init returned a continue signal
+        if (isInitContinue(result)) {
+          return Promise.resolve(actor.handleContinue(result.continue));
+        }
+      })
+      .catch((err) => {
+        this.supervisor.handleCrash(actorRef, err);
+      });
 
     this.processMailbox(instanceId);
 

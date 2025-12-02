@@ -68,6 +68,21 @@ export type ChildSupervisionStrategy =
   | "rest-for-one";
 
 /**
+ * Return type for init() that signals async continuation work.
+ * @template T The type of data to pass to handleContinue()
+ */
+export interface InitContinue<T = any> {
+  continue: T;
+}
+
+/**
+ * Type guard to check if init returned a continue signal.
+ */
+export function isInitContinue(value: any): value is InitContinue {
+  return value && typeof value === "object" && "continue" in value;
+}
+
+/**
  * Options for child supervision.
  */
 export interface ChildSupervisionOptions {
@@ -240,8 +255,38 @@ export abstract class Actor<TCast = any, TCall = any, TReply = any> {
   /**
    * Called when the actor is started.
    * This is a good place to initialize state.
+   *
+   * Can return `{ continue: data }` to trigger async post-initialization work.
+   * The `handleContinue(data)` method will be called after init completes.
+   *
+   * @example
+   * ```typescript
+   * class MyActor extends Actor {
+   *   init() {
+   *     // Quick sync setup
+   *     this.cache = new Map();
+   *     // Signal that expensive async work should happen
+   *     return { continue: { loadFromDb: true } };
+   *   }
+   *
+   *   async handleContinue(data: { loadFromDb: boolean }) {
+   *     // Expensive async initialization that doesn't block spawn
+   *     if (data.loadFromDb) {
+   *       await this.loadDataFromDatabase();
+   *     }
+   *   }
+   * }
+   * ```
    */
-  init(...args: any[]): void | Promise<void> {}
+  init(...args: any[]): void | InitContinue | Promise<void | InitContinue> {}
+
+  /**
+   * Called after init() when init returns `{ continue: data }`.
+   * Use this for expensive async initialization that shouldn't block spawn.
+   *
+   * @param continueData The data passed via `{ continue: data }` from init()
+   */
+  handleContinue(continueData: any): void | Promise<void> {}
 
   /**
    * Called when the actor is gracefully terminated.
