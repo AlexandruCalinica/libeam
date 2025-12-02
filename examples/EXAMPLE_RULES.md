@@ -141,14 +141,9 @@ main().catch(console.error);
 
 | File | Level | Demonstrates |
 |------|-------|--------------|
-| `chat.ts` | Intermediate | Multi-node chat with in-memory transport |
-| `distributed_ping_pong.ts` | Advanced | Real distributed actors via ZeroMQ |
-
-## Planned Examples
-
-| File | Level | Demonstrates |
-|------|-------|--------------|
 | `typed_actors.ts` | Basic | Type-safe actors with generics |
+| `chat.ts` | Intermediate | Multi-node chat with in-memory transport |
 | `supervision_tree.ts` | Intermediate | Parent-child supervision strategies |
 | `message_stashing.ts` | Intermediate | Deferred message processing |
 | `actor_watching.ts` | Intermediate | Monitoring actor termination |
+| `distributed_ping_pong.ts` | Advanced | Real distributed actors via ZeroMQ |
