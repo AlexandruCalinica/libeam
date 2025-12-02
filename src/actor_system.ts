@@ -11,6 +11,7 @@ import {
   TerminationReason,
   DownMessage,
   ExitMessage,
+  TimeoutMessage,
   StashedMessage,
   isInitContinue,
 } from "./actor";
@@ -347,6 +348,8 @@ export class ActorSystem implements HealthCheckable {
         stash: [],
         timers: new Map(),
         trapExit: false,
+        idleTimeout: 0,
+        lastActivityTime: Date.now(),
       };
 
       this.actors.set(instanceId, actor);
@@ -425,6 +428,8 @@ export class ActorSystem implements HealthCheckable {
       stash: [],
       timers: new Map(),
       trapExit: false,
+      idleTimeout: 0,
+      lastActivityTime: Date.now(),
     };
 
     this.actors.set(instanceId, actor);
@@ -995,6 +1000,119 @@ export class ActorSystem implements HealthCheckable {
     }
   }
 
+  // ============ Idle Timeout Management ============
+
+  /**
+   * Sets the idle timeout for an actor.
+   * When the actor hasn't received any messages for the specified duration,
+   * it will receive a TimeoutMessage via handleInfo().
+   * @param actorRef The actor to set the timeout for
+   * @param timeoutMs Timeout in milliseconds (0 to disable)
+   */
+  setActorIdleTimeout(actorRef: ActorRef, timeoutMs: number): void {
+    const actorId = actorRef.id.id;
+    const actor = this.actors.get(actorId);
+
+    if (!actor) {
+      throw new ActorNotFoundError(actorId, this.id);
+    }
+
+    // Clear existing idle timeout if any
+    if (actor.context.idleTimeoutHandle) {
+      clearTimeout(actor.context.idleTimeoutHandle);
+      actor.context.idleTimeoutHandle = undefined;
+    }
+
+    actor.context.idleTimeout = timeoutMs;
+
+    if (timeoutMs > 0) {
+      // Reset activity time and start the timeout
+      actor.context.lastActivityTime = Date.now();
+      this._scheduleIdleTimeout(actorId, actor);
+
+      this.log.debug("Idle timeout set", {
+        actorId,
+        timeoutMs,
+      });
+    } else {
+      this.log.debug("Idle timeout disabled", { actorId });
+    }
+  }
+
+  /**
+   * Schedules the idle timeout check for an actor.
+   * Called internally after setting timeout or after processing a message.
+   */
+  private _scheduleIdleTimeout(actorId: string, actor: Actor): void {
+    if (actor.context.idleTimeout <= 0) {
+      return;
+    }
+
+    // Clear any existing timeout
+    if (actor.context.idleTimeoutHandle) {
+      clearTimeout(actor.context.idleTimeoutHandle);
+    }
+
+    actor.context.idleTimeoutHandle = setTimeout(() => {
+      // Check if actor still exists
+      if (!this.actors.has(actorId)) {
+        return;
+      }
+
+      const now = Date.now();
+      const idleMs = now - actor.context.lastActivityTime;
+
+      // Double-check that we've actually been idle long enough
+      // (in case activity happened but timeout wasn't cleared)
+      if (idleMs >= actor.context.idleTimeout) {
+        const timeoutMessage: TimeoutMessage = {
+          type: "timeout",
+          idleMs,
+        };
+
+        // Deliver via handleInfo
+        Promise.resolve(actor.handleInfo(timeoutMessage)).catch((err) => {
+          this.log.error("Error in handleInfo for timeout message", err, {
+            actorId,
+          });
+        });
+
+        // Reschedule for the next timeout period
+        actor.context.lastActivityTime = now;
+        this._scheduleIdleTimeout(actorId, actor);
+      } else {
+        // Activity happened since we scheduled, reschedule for remaining time
+        const remainingMs = actor.context.idleTimeout - idleMs;
+        actor.context.idleTimeoutHandle = setTimeout(() => {
+          this._scheduleIdleTimeout(actorId, actor);
+        }, remainingMs);
+      }
+    }, actor.context.idleTimeout);
+  }
+
+  /**
+   * Resets the idle timeout for an actor (called when a message is processed).
+   * Called internally by the mailbox processor.
+   */
+  private _resetIdleTimeout(actorId: string, actor: Actor): void {
+    if (actor.context.idleTimeout <= 0) {
+      return;
+    }
+
+    actor.context.lastActivityTime = Date.now();
+    this._scheduleIdleTimeout(actorId, actor);
+  }
+
+  /**
+   * Clears the idle timeout for an actor (called during actor termination).
+   */
+  private _clearIdleTimeout(actor: Actor): void {
+    if (actor.context.idleTimeoutHandle) {
+      clearTimeout(actor.context.idleTimeoutHandle);
+      actor.context.idleTimeoutHandle = undefined;
+    }
+  }
+
   /**
    * (For testing) Gets the instance IDs of all local actors.
    */
@@ -1052,6 +1170,9 @@ export class ActorSystem implements HealthCheckable {
 
       // Cancel all active timers for this actor
       this.cancelAllActorTimers(actorRef);
+
+      // Clear idle timeout
+      this._clearIdleTimeout(actor);
 
       // Notify watchers of this actor's termination
       this.notifyWatchers(actorRef, { type: "normal" });
@@ -1152,6 +1273,9 @@ export class ActorSystem implements HealthCheckable {
 
       // Cancel all active timers for this actor
       this.cancelAllActorTimers(actorRef);
+
+      // Clear idle timeout
+      this._clearIdleTimeout(actor);
 
       // Optionally notify watchers (typically not done for restarts)
       if (notifyWatchers) {
@@ -1313,6 +1437,9 @@ export class ActorSystem implements HealthCheckable {
 
       // Set current message so stash() knows what to stash
       actor.context.currentMessage = stashedMessage;
+
+      // Reset idle timeout since we're processing a message
+      this._resetIdleTimeout(id, actor);
 
       try {
         if (stashedMessage.type === "cast") {

@@ -75,9 +75,19 @@ export interface ExitMessage {
 }
 
 /**
+ * Message sent to an actor when it has been idle (no messages) for the configured timeout.
+ * Delivered via handleInfo().
+ */
+export interface TimeoutMessage {
+  type: "timeout";
+  /** How long the actor was idle in milliseconds */
+  idleMs: number;
+}
+
+/**
  * System info messages delivered to actors via handleInfo().
  */
-export type InfoMessage = DownMessage | ExitMessage;
+export type InfoMessage = DownMessage | ExitMessage | TimeoutMessage;
 
 /**
  * Strategy for supervising child actors.
@@ -228,6 +238,12 @@ export interface ActorContext {
   timers: Map<string, TimerEntry>;
   /** Whether this actor traps exit signals from linked actors */
   trapExit: boolean;
+  /** Idle timeout in milliseconds (0 = disabled) */
+  idleTimeout: number;
+  /** Timestamp of last activity (message received) */
+  lastActivityTime: number;
+  /** Handle to the idle timeout timer */
+  idleTimeoutHandle?: NodeJS.Timeout;
 }
 
 /**
@@ -430,6 +446,48 @@ export abstract class Actor<TCast = any, TCall = any, TReply = any> {
    */
   protected isTrapExit(): boolean {
     return this.context.trapExit;
+  }
+
+  // ============ Idle Timeout Methods ============
+
+  /**
+   * Set an idle timeout for this actor.
+   * When the actor hasn't received any messages for the specified duration,
+   * it will receive a TimeoutMessage via handleInfo().
+   *
+   * The timeout resets each time a message is processed.
+   * Set to 0 to disable the idle timeout.
+   *
+   * @param timeoutMs Timeout in milliseconds (0 to disable)
+   *
+   * @example
+   * ```typescript
+   * class CacheActor extends Actor {
+   *   private cache = new Map();
+   *
+   *   init() {
+   *     // Expire cache entry after 30 seconds of inactivity
+   *     this.setIdleTimeout(30000);
+   *   }
+   *
+   *   handleInfo(message: InfoMessage) {
+   *     if (message.type === "timeout") {
+   *       console.log(`Idle for ${message.idleMs}ms, clearing cache`);
+   *       this.cache.clear();
+   *     }
+   *   }
+   * }
+   * ```
+   */
+  protected setIdleTimeout(timeoutMs: number): void {
+    this.context.system.setActorIdleTimeout(this.self, timeoutMs);
+  }
+
+  /**
+   * Returns the current idle timeout in milliseconds (0 if disabled).
+   */
+  protected getIdleTimeout(): number {
+    return this.context.idleTimeout;
   }
 
   // ============ Stash Methods ============
