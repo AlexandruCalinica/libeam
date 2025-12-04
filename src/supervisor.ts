@@ -33,7 +33,7 @@ export class Supervisor {
   handleCrash(actorRef: ActorRef, error: any): void {
     const actorId = actorRef.id.id;
 
-    // Check if this is a child actor - delegate to child supervisor
+    // Check if this is a child actor with local parent - delegate to child supervisor
     const metadata = this.system.getActorMetadata(actorId);
     if (metadata?.parent) {
       this.system
@@ -42,6 +42,19 @@ export class Supervisor {
         .catch((err) => {
           this.log.error("Error in child supervision", err, { actorId });
         });
+      return;
+    }
+
+    // Check if this is a child actor with remote parent - notify remote parent
+    if (this.system.hasRemoteParent(actorId)) {
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+      this.system.notifyRemoteParentOfCrash(
+        actorId,
+        { type: "error", error },
+        errorMessage,
+      );
+      // Don't restart locally - let the remote parent decide
       return;
     }
 

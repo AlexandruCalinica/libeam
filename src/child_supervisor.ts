@@ -1,6 +1,11 @@
 // src/child_supervisor.ts
 
-import { Actor, ActorRef, ChildSupervisionOptions } from "./actor";
+import {
+  Actor,
+  ActorRef,
+  ChildSupervisionOptions,
+  TerminationReason,
+} from "./actor";
 import { ActorSystem } from "./actor_system";
 import { Logger, createLogger } from "./logger";
 
@@ -264,4 +269,288 @@ export class ChildSupervisor {
   clearRestartCount(actorId: string): void {
     this.restartCounts.delete(actorId);
   }
+
+  /**
+   * Handles a crash notification for a remote child.
+   * Called when a child on a remote node has crashed.
+   */
+  async handleRemoteChildCrash(
+    remoteChild: RemoteChildEntry,
+    reason: TerminationReason,
+    errorMessage?: string,
+  ): Promise<void> {
+    const { childRef, parentRef, actorClass, options } = remoteChild;
+    const childId = childRef.id.id;
+    const parentId = parentRef.id.id;
+
+    const parentActor = this.system.getActor(parentId);
+    if (!parentActor) {
+      this.log.warn("Parent actor not found for crashed remote child", {
+        childId,
+        parentId,
+      });
+      return;
+    }
+
+    // Get parent's supervision options
+    const supervisionOptions = parentActor.childSupervision();
+
+    this.log.error(
+      "Remote child actor crashed",
+      errorMessage
+        ? new Error(errorMessage)
+        : new Error(`Remote child crashed: ${reason.type}`),
+      {
+        childId,
+        parentId,
+        strategy: supervisionOptions.strategy,
+        reason: reason.type,
+      },
+    );
+
+    // Check restart limits using stable key
+    const restartKey = this.getRestartKeyForRemote(childId, parentId, options);
+    if (!this.canRestart(restartKey, supervisionOptions)) {
+      this.log.warn("Remote child exceeded max restarts, removing", {
+        childId,
+        maxRestarts: supervisionOptions.maxRestarts,
+      });
+      // Remove from parent's tracking
+      this.system.removeRemoteChild(childId, parentRef);
+      return;
+    }
+
+    // Apply supervision strategy
+    switch (supervisionOptions.strategy) {
+      case "one-for-one":
+        await this.handleRemoteOneForOne(remoteChild, parentActor);
+        break;
+      case "one-for-all":
+        await this.handleRemoteOneForAll(remoteChild, parentActor);
+        break;
+      case "rest-for-one":
+        await this.handleRemoteRestForOne(remoteChild, parentActor);
+        break;
+    }
+  }
+
+  /**
+   * Generates a stable key for tracking remote child restarts.
+   */
+  private getRestartKeyForRemote(
+    childId: string,
+    parentId: string,
+    options: { name?: string; args?: any[] },
+  ): string {
+    const childKey = options.name || JSON.stringify(options.args || childId);
+    return `${parentId}:${childKey}`;
+  }
+
+  /**
+   * One-for-one strategy for remote child.
+   */
+  private async handleRemoteOneForOne(
+    remoteChild: RemoteChildEntry,
+    _parentActor: Actor,
+  ): Promise<void> {
+    this.log.info("Applying one-for-one strategy for remote child", {
+      childId: remoteChild.childRef.id.id,
+      childNodeId: remoteChild.childNodeId,
+    });
+
+    const newRef = await this.system.restartRemoteChild(remoteChild);
+    if (newRef) {
+      this.log.info("Remote child restarted successfully", {
+        oldId: remoteChild.childRef.id.id,
+        newId: newRef.id.id,
+      });
+    } else {
+      this.log.error("Failed to restart remote child", undefined, {
+        childId: remoteChild.childRef.id.id,
+      });
+    }
+  }
+
+  /**
+   * One-for-all strategy for remote children.
+   * Restarts all children (local and remote) when one crashes.
+   */
+  private async handleRemoteOneForAll(
+    crashedRemoteChild: RemoteChildEntry,
+    parentActor: Actor,
+  ): Promise<void> {
+    this.log.info("Applying one-for-all strategy (triggered by remote child)", {
+      crashedChildId: crashedRemoteChild.childRef.id.id,
+      totalChildren: parentActor.context.children.size,
+    });
+
+    // Get all children (both local and remote)
+    const allChildren = Array.from(parentActor.context.childOrder);
+
+    // Collect metadata for local children
+    const localMetadataList = allChildren
+      .filter((ref) => ref.id.systemId === this.system.id)
+      .map((ref) => ({
+        ref,
+        metadata: this.system.getActorMetadata(ref.id.id),
+        isRemote: false,
+      }));
+
+    // Collect metadata for remote children
+    const remoteMetadataList = allChildren
+      .filter((ref) => ref.id.systemId !== this.system.id)
+      .map((ref) => ({
+        ref,
+        remoteChild: this.system.getRemoteChild(ref.id.id),
+        isRemote: true,
+      }));
+
+    // Stop all local children first (in reverse order)
+    for (let i = allChildren.length - 1; i >= 0; i--) {
+      const childRef = allChildren[i];
+      if (childRef.id.systemId === this.system.id) {
+        await this.system.stop(childRef);
+      } else {
+        await this.system.stopRemoteChild(childRef.id.id);
+      }
+    }
+
+    // Restart all children (in original order)
+    for (const item of localMetadataList) {
+      if (item.metadata) {
+        const newRef = this.system.spawnChild(
+          parentActor.self,
+          item.metadata.actorClass,
+          item.metadata.options,
+        );
+        this.log.debug("Restarted local child in one-for-all", {
+          oldId: item.ref.id.id,
+          newId: newRef.id.id,
+        });
+      }
+    }
+
+    for (const item of remoteMetadataList) {
+      if (item.remoteChild) {
+        const newRef = await this.system.spawnChildRemote(
+          parentActor.self,
+          item.remoteChild.actorClass,
+          item.remoteChild.childNodeId,
+          item.remoteChild.options,
+        );
+        if (newRef) {
+          this.log.debug("Restarted remote child in one-for-all", {
+            oldId: item.ref.id.id,
+            newId: newRef.id.id,
+          });
+        }
+      }
+    }
+
+    this.log.info("All children restarted (one-for-all)", {
+      localCount: localMetadataList.length,
+      remoteCount: remoteMetadataList.length,
+    });
+  }
+
+  /**
+   * Rest-for-one strategy for remote children.
+   * Restarts the crashed child and all children started after it.
+   */
+  private async handleRemoteRestForOne(
+    crashedRemoteChild: RemoteChildEntry,
+    parentActor: Actor,
+  ): Promise<void> {
+    const childOrder = parentActor.context.childOrder;
+    const crashedIndex = childOrder.findIndex(
+      (ref) => ref.id.id === crashedRemoteChild.childRef.id.id,
+    );
+
+    if (crashedIndex === -1) {
+      this.log.warn("Crashed remote child not found in order list", {
+        childId: crashedRemoteChild.childRef.id.id,
+      });
+      return;
+    }
+
+    const childrenToRestart = childOrder.slice(crashedIndex);
+
+    this.log.info(
+      "Applying rest-for-one strategy (triggered by remote child)",
+      {
+        crashedChildId: crashedRemoteChild.childRef.id.id,
+        crashedIndex,
+        childrenToRestart: childrenToRestart.length,
+      },
+    );
+
+    // Collect metadata before stopping
+    const metadataList = childrenToRestart.map((ref) => {
+      const isRemote = ref.id.systemId !== this.system.id;
+      return {
+        ref,
+        metadata: isRemote
+          ? undefined
+          : this.system.getActorMetadata(ref.id.id),
+        remoteChild: isRemote
+          ? this.system.getRemoteChild(ref.id.id)
+          : undefined,
+        isRemote,
+      };
+    });
+
+    // Stop children in reverse order
+    for (let i = childrenToRestart.length - 1; i >= 0; i--) {
+      const childRef = childrenToRestart[i];
+      if (childRef.id.systemId === this.system.id) {
+        await this.system.stop(childRef);
+      } else {
+        await this.system.stopRemoteChild(childRef.id.id);
+      }
+    }
+
+    // Restart in original order
+    for (const item of metadataList) {
+      if (item.isRemote && item.remoteChild) {
+        const newRef = await this.system.spawnChildRemote(
+          parentActor.self,
+          item.remoteChild.actorClass,
+          item.remoteChild.childNodeId,
+          item.remoteChild.options,
+        );
+        if (newRef) {
+          this.log.debug("Restarted remote child in rest-for-one", {
+            oldId: item.ref.id.id,
+            newId: newRef.id.id,
+          });
+        }
+      } else if (!item.isRemote && item.metadata) {
+        const newRef = this.system.spawnChild(
+          parentActor.self,
+          item.metadata.actorClass,
+          item.metadata.options,
+        );
+        this.log.debug("Restarted local child in rest-for-one", {
+          oldId: item.ref.id.id,
+          newId: newRef.id.id,
+        });
+      }
+    }
+
+    this.log.info("Rest-for-one restart complete", {
+      restartedCount: childrenToRestart.length,
+    });
+  }
+}
+
+/**
+ * Information about a child actor spawned on a remote node.
+ * Re-exported from actor_system for use in this module.
+ */
+export interface RemoteChildEntry {
+  childRef: ActorRef;
+  childNodeId: string;
+  parentRef: ActorRef;
+  actorClass: new () => Actor;
+  options: { name?: string; args?: any[] };
 }

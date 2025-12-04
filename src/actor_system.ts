@@ -115,6 +115,27 @@ interface RemoteLinkEntry {
 }
 
 /**
+ * Information about a child actor spawned on a remote node.
+ * Stored on the parent's node.
+ */
+interface RemoteChildEntry {
+  childRef: ActorRef;
+  childNodeId: string;
+  parentRef: ActorRef;
+  actorClass: new () => Actor;
+  options: SpawnOptions;
+}
+
+/**
+ * Information about a remote parent supervising a local child.
+ * Stored on the child's node.
+ */
+interface RemoteParentInfo {
+  parentNodeId: string;
+  parentActorId: string;
+}
+
+/**
  * Manages the lifecycle of all actors on a single node.
  */
 export class ActorSystem implements HealthCheckable {
@@ -139,6 +160,10 @@ export class ActorSystem implements HealthCheckable {
   private readonly remoteLinkers = new Map<string, Set<RemoteLinkerInfo>>();
   /** Map from linkRefId to RemoteLinkEntry (local actor linked to remote actor) */
   private readonly remoteLinks = new Map<string, RemoteLinkEntry>();
+  /** Map from child instance ID to RemoteChildEntry (child on remote node) */
+  private readonly remoteChildren = new Map<string, RemoteChildEntry>();
+  /** Map from local child instance ID to RemoteParentInfo (parent on remote node) */
+  private readonly remoteParents = new Map<string, RemoteParentInfo>();
   private readonly supervisor: Supervisor;
   private readonly childSupervisor: ChildSupervisor;
   private readonly transport: Transport;
@@ -1741,10 +1766,16 @@ export class ActorSystem implements HealthCheckable {
     const { id, name } = actorRef.id;
     const actor = this.actors.get(id);
     if (actor) {
-      // Cascading termination: stop all children first
+      // Cascading termination: stop all children first (both local and remote)
       const children = Array.from(actor.context.children);
       for (const childRef of children) {
-        await this.stop(childRef);
+        if (childRef.id.systemId === this.id) {
+          // Local child - stop directly
+          await this.stop(childRef);
+        } else {
+          // Remote child - stop via RPC
+          await this.stopRemoteChild(childRef.id.id);
+        }
       }
 
       // Remove this actor from parent's children set and order
@@ -1984,6 +2015,21 @@ export class ActorSystem implements HealthCheckable {
     // Handle link:add RPC
     if (rpcMessage.type === "link:add") {
       return this._handleRemoteLinkAdd(rpcMessage);
+    }
+
+    // Handle child:spawn RPC
+    if (rpcMessage.type === "child:spawn") {
+      return this._handleRemoteChildSpawn(rpcMessage);
+    }
+
+    // Handle child:restart RPC
+    if (rpcMessage.type === "child:restart") {
+      return this._handleRemoteChildRestart(rpcMessage);
+    }
+
+    // Handle child:stop RPC
+    if (rpcMessage.type === "child:stop") {
+      return this._handleRemoteChildStop(rpcMessage);
     }
 
     // Handle actor call
@@ -2331,6 +2377,644 @@ export class ActorSystem implements HealthCheckable {
     }
   }
 
+  // ==================== Remote Child Supervision ====================
+
+  /**
+   * Handles a remote child spawn request.
+   * Called when another node wants to spawn a supervised child on this node.
+   */
+  private _handleRemoteChildSpawn(request: {
+    type: "child:spawn";
+    childInstanceId: string;
+    actorClassName: string;
+    options: SpawnOptions;
+    parentNodeId: string;
+    parentActorId: string;
+  }): { success: boolean; childActorId?: string; error?: string } {
+    const {
+      childInstanceId,
+      actorClassName,
+      options,
+      parentNodeId,
+      parentActorId,
+    } = request;
+
+    this.log.debug("Received remote child spawn request", {
+      childInstanceId,
+      actorClassName,
+      parentNodeId,
+      parentActorId,
+    });
+
+    // Look up the actor class
+    let actorClass = this.actorClasses.get(actorClassName);
+    if (!actorClass) {
+      const globalClasses = (global as any).actorClasses || {};
+      actorClass = globalClasses[actorClassName];
+    }
+
+    if (!actorClass) {
+      this.log.error(
+        "Actor class not registered for remote child spawn",
+        undefined,
+        {
+          actorClassName,
+        },
+      );
+      return {
+        success: false,
+        error: `Actor class not registered: ${actorClassName}`,
+      };
+    }
+
+    try {
+      // Create the child actor with the pre-generated instance ID
+      const { name, args } = options;
+      const actorId = new ActorId(this.id, childInstanceId, name);
+      const actorRef = new ActorRef(actorId, this);
+
+      const actor = new actorClass();
+      actor.self = actorRef;
+      actor.context = {
+        parent: undefined, // No local parent
+        children: new Set(),
+        childOrder: [],
+        system: this,
+        watches: new Map(),
+        links: new Map(),
+        stash: [],
+        timers: new Map(),
+        trapExit: false,
+        idleTimeout: 0,
+        lastActivityTime: Date.now(),
+      };
+
+      this.actors.set(childInstanceId, actor);
+      this.mailboxes.set(childInstanceId, []);
+      this.actorMetadata.set(childInstanceId, {
+        actorClass,
+        options,
+        parent: undefined, // Remote parent tracked separately
+      });
+
+      // Store remote parent info
+      this.remoteParents.set(childInstanceId, {
+        parentNodeId,
+        parentActorId,
+      });
+
+      if (name) {
+        this.registry.register(name, this.id, childInstanceId);
+      }
+
+      // Initialize the actor
+      Promise.resolve(actor.init(...(args || [])))
+        .then((result) => {
+          if (isInitContinue(result)) {
+            return Promise.resolve(actor.handleContinue(result.continue));
+          }
+        })
+        .catch((err) => {
+          // Remote child crashed during init - will be handled by crash notification
+          this.supervisor.handleCrash(actorRef, err);
+        });
+
+      this.processMailbox(childInstanceId);
+
+      this.log.debug("Remote child spawned successfully", {
+        childInstanceId,
+        actorClassName,
+        parentNodeId,
+      });
+
+      return { success: true, childActorId: childInstanceId };
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      this.log.error(
+        "Failed to spawn remote child",
+        err instanceof Error ? err : undefined,
+        {
+          childInstanceId,
+          actorClassName,
+        },
+      );
+      return { success: false, error: errorMessage };
+    }
+  }
+
+  /**
+   * Handles a remote child restart request.
+   * Called when parent's node requests a restart of a child on this node.
+   */
+  private async _handleRemoteChildRestart(request: {
+    type: "child:restart";
+    oldChildInstanceId: string;
+    newChildInstanceId: string;
+    parentNodeId: string;
+    parentActorId: string;
+  }): Promise<{ success: boolean; newChildActorId?: string; error?: string }> {
+    const {
+      oldChildInstanceId,
+      newChildInstanceId,
+      parentNodeId,
+      parentActorId,
+    } = request;
+
+    this.log.debug("Received remote child restart request", {
+      oldChildInstanceId,
+      newChildInstanceId,
+      parentNodeId,
+    });
+
+    // Get the metadata for the old child
+    const metadata = this.actorMetadata.get(oldChildInstanceId);
+    if (!metadata) {
+      return {
+        success: false,
+        error: `Child metadata not found: ${oldChildInstanceId}`,
+      };
+    }
+
+    // Stop the old child (if still running)
+    const oldActor = this.actors.get(oldChildInstanceId);
+    if (oldActor) {
+      const oldRef = new ActorRef(
+        new ActorId(this.id, oldChildInstanceId, metadata.options.name),
+        this,
+      );
+      await this.stop(oldRef);
+    }
+
+    // Clean up old remote parent tracking
+    this.remoteParents.delete(oldChildInstanceId);
+
+    // Spawn the new child using the same class and options
+    const result = this._handleRemoteChildSpawn({
+      type: "child:spawn",
+      childInstanceId: newChildInstanceId,
+      actorClassName: metadata.actorClass.name,
+      options: metadata.options,
+      parentNodeId,
+      parentActorId,
+    });
+
+    if (result.success) {
+      this.log.info("Remote child restarted successfully", {
+        oldChildInstanceId,
+        newChildInstanceId,
+      });
+    }
+
+    return {
+      success: result.success,
+      newChildActorId: result.childActorId,
+      error: result.error,
+    };
+  }
+
+  /**
+   * Handles a remote child stop request.
+   * Called when parent's node requests stopping a child on this node.
+   */
+  private async _handleRemoteChildStop(request: {
+    type: "child:stop";
+    childInstanceId: string;
+    parentNodeId: string;
+    parentActorId: string;
+  }): Promise<{ success: boolean; error?: string }> {
+    const { childInstanceId, parentNodeId } = request;
+
+    this.log.debug("Received remote child stop request", {
+      childInstanceId,
+      parentNodeId,
+    });
+
+    const actor = this.actors.get(childInstanceId);
+    if (!actor) {
+      // Already stopped
+      this.remoteParents.delete(childInstanceId);
+      return { success: true };
+    }
+
+    try {
+      const metadata = this.actorMetadata.get(childInstanceId);
+      const actorRef = new ActorRef(
+        new ActorId(this.id, childInstanceId, metadata?.options.name),
+        this,
+      );
+
+      // Clean up remote parent tracking before stopping
+      this.remoteParents.delete(childInstanceId);
+
+      await this.stop(actorRef);
+
+      this.log.debug("Remote child stopped successfully", { childInstanceId });
+      return { success: true };
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      this.log.error(
+        "Failed to stop remote child",
+        err instanceof Error ? err : undefined,
+        {
+          childInstanceId,
+        },
+      );
+      return { success: false, error: errorMessage };
+    }
+  }
+
+  /**
+   * Handles a crash notification for a remote child.
+   * Called when a child on a remote node has crashed and the parent is on this node.
+   */
+  private _handleRemoteChildCrash(notification: {
+    type: "child:crash";
+    childInstanceId: string;
+    childNodeId: string;
+    parentActorId: string;
+    reason: TerminationReason;
+    errorMessage?: string;
+  }): void {
+    const {
+      childInstanceId,
+      childNodeId,
+      parentActorId,
+      reason,
+      errorMessage,
+    } = notification;
+
+    this.log.debug("Received remote child crash notification", {
+      childInstanceId,
+      childNodeId,
+      parentActorId,
+      reason: reason?.type,
+    });
+
+    // Find the remote child entry
+    const remoteChild = this.remoteChildren.get(childInstanceId);
+    if (!remoteChild) {
+      this.log.warn("Remote child entry not found for crash notification", {
+        childInstanceId,
+      });
+      return;
+    }
+
+    // Delegate to child supervisor for handling
+    this.childSupervisor.handleRemoteChildCrash(
+      remoteChild,
+      reason,
+      errorMessage,
+    );
+  }
+
+  /**
+   * Notifies the remote parent that a child has crashed.
+   * Called from supervisor when a child with a remote parent crashes.
+   */
+  notifyRemoteParentOfCrash(
+    childInstanceId: string,
+    reason: TerminationReason,
+    errorMessage?: string,
+  ): void {
+    const remoteParent = this.remoteParents.get(childInstanceId);
+    if (!remoteParent) {
+      return;
+    }
+
+    this.log.debug("Notifying remote parent of child crash", {
+      childInstanceId,
+      parentNodeId: remoteParent.parentNodeId,
+      parentActorId: remoteParent.parentActorId,
+    });
+
+    this.transport.send(remoteParent.parentNodeId, {
+      type: "child:crash",
+      childInstanceId,
+      childNodeId: this.id,
+      parentActorId: remoteParent.parentActorId,
+      reason,
+      errorMessage,
+    });
+  }
+
+  /**
+   * Checks if a child has a remote parent.
+   */
+  hasRemoteParent(childInstanceId: string): boolean {
+    return this.remoteParents.has(childInstanceId);
+  }
+
+  /**
+   * Gets the remote child entry for a child instance ID.
+   */
+  getRemoteChild(childInstanceId: string): RemoteChildEntry | undefined {
+    return this.remoteChildren.get(childInstanceId);
+  }
+
+  /**
+   * Spawns a child actor on a remote node.
+   * @param parentRef Reference to the local parent actor
+   * @param actorClass The actor class to spawn
+   * @param targetNodeId The node where the child should be spawned
+   * @param options Spawn options
+   * @returns Reference to the spawned remote child, or null if spawn failed
+   */
+  async spawnChildRemote<T extends Actor>(
+    parentRef: ActorRef,
+    actorClass: new () => T,
+    targetNodeId: string,
+    options: SpawnOptions = {},
+  ): Promise<ActorRef | null> {
+    if (this._isShuttingDown) {
+      throw new SystemShuttingDownError("spawn remote child actors");
+    }
+
+    const parentId = parentRef.id.id;
+    const parentActor = this.actors.get(parentId);
+
+    if (!parentActor) {
+      throw new ActorNotFoundError(parentId, this.id);
+    }
+
+    // Generate instance ID locally
+    const childInstanceId = uuidv4();
+
+    this.log.debug("Spawning remote child", {
+      parentId,
+      targetNodeId,
+      actorClassName: actorClass.name,
+      childInstanceId,
+    });
+
+    try {
+      // Send spawn request to target node
+      const response = await this.transport.request(
+        targetNodeId,
+        {
+          type: "child:spawn",
+          childInstanceId,
+          actorClassName: actorClass.name,
+          options,
+          parentNodeId: this.id,
+          parentActorId: parentId,
+        },
+        5000, // 5 second timeout
+      );
+
+      if (!response.success) {
+        this.log.error("Remote child spawn failed", undefined, {
+          childInstanceId,
+          error: response.error,
+        });
+        return null;
+      }
+
+      // Create a reference to the remote child
+      const childActorId = new ActorId(
+        targetNodeId,
+        childInstanceId,
+        options.name,
+      );
+      const childRef = new ActorRef(childActorId, this);
+
+      // Store remote child entry
+      this.remoteChildren.set(childInstanceId, {
+        childRef,
+        childNodeId: targetNodeId,
+        parentRef,
+        actorClass,
+        options,
+      });
+
+      // Add to parent's children set and order
+      parentActor.context.children.add(childRef);
+      parentActor.context.childOrder.push(childRef);
+
+      this.log.debug("Remote child spawned successfully", {
+        parentId,
+        childInstanceId,
+        targetNodeId,
+      });
+
+      return childRef;
+    } catch (err) {
+      this.log.error(
+        "Failed to spawn remote child",
+        err instanceof Error ? err : undefined,
+        {
+          parentId,
+          targetNodeId,
+          actorClassName: actorClass.name,
+        },
+      );
+      return null;
+    }
+  }
+
+  /**
+   * Restarts a remote child actor.
+   * Called by ChildSupervisor when applying supervision strategies.
+   */
+  async restartRemoteChild(
+    remoteChild: RemoteChildEntry,
+  ): Promise<ActorRef | null> {
+    const { childRef, childNodeId, parentRef, actorClass, options } =
+      remoteChild;
+    const oldChildInstanceId = childRef.id.id;
+    const newChildInstanceId = uuidv4();
+
+    this.log.debug("Restarting remote child", {
+      oldChildInstanceId,
+      newChildInstanceId,
+      childNodeId,
+    });
+
+    try {
+      // Send restart request to target node
+      const response = await this.transport.request(
+        childNodeId,
+        {
+          type: "child:restart",
+          oldChildInstanceId,
+          newChildInstanceId,
+          parentNodeId: this.id,
+          parentActorId: parentRef.id.id,
+        },
+        5000, // 5 second timeout
+      );
+
+      if (!response.success) {
+        this.log.error("Remote child restart failed", undefined, {
+          oldChildInstanceId,
+          error: response.error,
+        });
+        // Clean up the old entry
+        this.remoteChildren.delete(oldChildInstanceId);
+        return null;
+      }
+
+      // Create new reference
+      const newChildActorId = new ActorId(
+        childNodeId,
+        newChildInstanceId,
+        options.name,
+      );
+      const newChildRef = new ActorRef(newChildActorId, this);
+
+      // Update remote child entry
+      this.remoteChildren.delete(oldChildInstanceId);
+      this.remoteChildren.set(newChildInstanceId, {
+        childRef: newChildRef,
+        childNodeId,
+        parentRef,
+        actorClass,
+        options,
+      });
+
+      // Update parent's children tracking
+      const parentActor = this.actors.get(parentRef.id.id);
+      if (parentActor) {
+        // Remove old ref
+        parentActor.context.children.delete(childRef);
+        const oldIndex = parentActor.context.childOrder.findIndex(
+          (ref) => ref.id.id === oldChildInstanceId,
+        );
+        if (oldIndex !== -1) {
+          parentActor.context.childOrder.splice(oldIndex, 1);
+        }
+
+        // Add new ref at the same position
+        parentActor.context.children.add(newChildRef);
+        if (oldIndex !== -1) {
+          parentActor.context.childOrder.splice(oldIndex, 0, newChildRef);
+        } else {
+          parentActor.context.childOrder.push(newChildRef);
+        }
+      }
+
+      this.log.info("Remote child restarted", {
+        oldChildInstanceId,
+        newChildInstanceId,
+        childNodeId,
+      });
+
+      return newChildRef;
+    } catch (err) {
+      this.log.error(
+        "Failed to restart remote child",
+        err instanceof Error ? err : undefined,
+        {
+          oldChildInstanceId,
+          childNodeId,
+        },
+      );
+      // Clean up tracking on failure
+      this.remoteChildren.delete(oldChildInstanceId);
+      return null;
+    }
+  }
+
+  /**
+   * Stops a remote child actor.
+   * Called by ChildSupervisor when applying supervision strategies.
+   */
+  async stopRemoteChild(childInstanceId: string): Promise<boolean> {
+    const remoteChild = this.remoteChildren.get(childInstanceId);
+    if (!remoteChild) {
+      this.log.warn("Remote child not found for stop", { childInstanceId });
+      return false;
+    }
+
+    const { childRef, childNodeId, parentRef } = remoteChild;
+
+    this.log.debug("Stopping remote child", {
+      childInstanceId,
+      childNodeId,
+    });
+
+    try {
+      // Send stop request to target node
+      const response = await this.transport.request(
+        childNodeId,
+        {
+          type: "child:stop",
+          childInstanceId,
+          parentNodeId: this.id,
+          parentActorId: parentRef.id.id,
+        },
+        5000, // 5 second timeout
+      );
+
+      // Clean up tracking regardless of response
+      this.remoteChildren.delete(childInstanceId);
+
+      // Remove from parent's children
+      const parentActor = this.actors.get(parentRef.id.id);
+      if (parentActor) {
+        parentActor.context.children.delete(childRef);
+        const index = parentActor.context.childOrder.findIndex(
+          (ref) => ref.id.id === childInstanceId,
+        );
+        if (index !== -1) {
+          parentActor.context.childOrder.splice(index, 1);
+        }
+      }
+
+      if (!response.success) {
+        this.log.warn("Remote child stop returned error", {
+          childInstanceId,
+          error: response.error,
+        });
+      }
+
+      this.log.debug("Remote child stopped", { childInstanceId });
+      return true;
+    } catch (err) {
+      this.log.error(
+        "Failed to stop remote child",
+        err instanceof Error ? err : undefined,
+        {
+          childInstanceId,
+          childNodeId,
+        },
+      );
+      // Clean up tracking on failure (child may have already stopped)
+      this.remoteChildren.delete(childInstanceId);
+      return false;
+    }
+  }
+
+  /**
+   * Removes a remote child from tracking without sending stop request.
+   * Used when child has exceeded max restarts.
+   */
+  removeRemoteChild(childInstanceId: string, parentRef: ActorRef): void {
+    const remoteChild = this.remoteChildren.get(childInstanceId);
+    if (!remoteChild) {
+      return;
+    }
+
+    this.log.debug("Removing remote child from tracking", {
+      childInstanceId,
+      parentId: parentRef.id.id,
+    });
+
+    // Clean up tracking
+    this.remoteChildren.delete(childInstanceId);
+
+    // Remove from parent's children
+    const parentActor = this.actors.get(parentRef.id.id);
+    if (parentActor) {
+      parentActor.context.children.delete(remoteChild.childRef);
+      const index = parentActor.context.childOrder.findIndex(
+        (ref) => ref.id.id === childInstanceId,
+      );
+      if (index !== -1) {
+        parentActor.context.childOrder.splice(index, 1);
+      }
+    }
+  }
+
   /**
    * Called when a remote node has left the cluster (crashed or graceful shutdown).
    * Notifies all local actors that were watching actors on the dead node.
@@ -2350,6 +3034,12 @@ export class ActorSystem implements HealthCheckable {
 
     // Handle remote links
     this._handleNodeFailureForLinks(deadNodeId);
+
+    // Handle remote children (children on the dead node)
+    this._handleNodeFailureForRemoteChildren(deadNodeId);
+
+    // Handle orphaned children (children whose parent was on the dead node)
+    this._handleNodeFailureForOrphanedChildren(deadNodeId);
 
     this.log.debug("Node failure handling complete", { deadNodeId });
   }
@@ -2482,6 +3172,94 @@ export class ActorSystem implements HealthCheckable {
     }
   }
 
+  /**
+   * Handle node failure for remote children.
+   * When a node dies, all children hosted on that node are considered dead.
+   */
+  private _handleNodeFailureForRemoteChildren(deadNodeId: string): void {
+    // Find all remote children on the dead node
+    const childrenToHandle: RemoteChildEntry[] = [];
+
+    for (const [childInstanceId, entry] of this.remoteChildren.entries()) {
+      if (entry.childNodeId === deadNodeId) {
+        childrenToHandle.push(entry);
+      }
+    }
+
+    if (childrenToHandle.length > 0) {
+      this.log.info("Handling remote children on failed node", {
+        deadNodeId,
+        childCount: childrenToHandle.length,
+      });
+
+      // Treat each child as if it crashed
+      for (const entry of childrenToHandle) {
+        // Handle as if we received a child:crash message
+        this._handleRemoteChildCrash({
+          type: "child:crash",
+          childInstanceId: entry.childRef.id.id,
+          childNodeId: deadNodeId,
+          parentActorId: entry.parentRef.id.id,
+          reason: { type: "killed" }, // Node failure is treated as killed
+        });
+      }
+    }
+  }
+
+  /**
+   * Handle node failure for orphaned children.
+   * When a parent's node dies, children on this node become orphaned.
+   */
+  private _handleNodeFailureForOrphanedChildren(deadNodeId: string): void {
+    // Find all local children whose remote parent was on the dead node
+    const orphanedChildren: string[] = [];
+
+    for (const [childInstanceId, parentInfo] of this.remoteParents.entries()) {
+      if (parentInfo.parentNodeId === deadNodeId) {
+        orphanedChildren.push(childInstanceId);
+      }
+    }
+
+    if (orphanedChildren.length > 0) {
+      this.log.info("Stopping orphaned children after parent node failure", {
+        deadNodeId,
+        orphanCount: orphanedChildren.length,
+      });
+
+      // Stop all orphaned children
+      for (const childInstanceId of orphanedChildren) {
+        // Clean up remote parent tracking
+        this.remoteParents.delete(childInstanceId);
+
+        // Stop the orphaned child
+        const actor = this.actors.get(childInstanceId);
+        if (actor) {
+          const metadata = this.actorMetadata.get(childInstanceId);
+          const childRef = new ActorRef(
+            new ActorId(this.id, childInstanceId, metadata?.options.name),
+            this,
+          );
+
+          this.log.debug("Stopping orphaned child", {
+            childInstanceId,
+            parentNodeId: deadNodeId,
+          });
+
+          // Stop asynchronously to not block node failure handling
+          this.stop(childRef).catch((err) => {
+            this.log.error(
+              "Error stopping orphaned child",
+              err instanceof Error ? err : undefined,
+              {
+                childInstanceId,
+              },
+            );
+          });
+        }
+      }
+    }
+  }
+
   private _handleRpcCast(rpcMessage: any): void {
     const { type, actorId, message } = rpcMessage;
 
@@ -2506,6 +3284,12 @@ export class ActorSystem implements HealthCheckable {
     // Handle link:exit message (remote linked actor exited)
     if (type === "link:exit") {
       this._handleRemoteLinkExit(rpcMessage);
+      return;
+    }
+
+    // Handle child:crash message (remote child crashed)
+    if (type === "child:crash") {
+      this._handleRemoteChildCrash(rpcMessage);
       return;
     }
 
@@ -2541,7 +3325,21 @@ export class ActorSystem implements HealthCheckable {
         });
         return;
       }
-      actor.handleCast(message);
+
+      // Wrap in try-catch and route errors through supervisor
+      try {
+        const result = actor.handleCast(message);
+        // Handle async handleCast
+        if (result instanceof Promise) {
+          result.catch((err) => {
+            const actorRef = new ActorRef(actorId, this);
+            this.supervisor.handleCrash(actorRef, err);
+          });
+        }
+      } catch (err) {
+        const actorRef = new ActorRef(actorId, this);
+        this.supervisor.handleCrash(actorRef, err);
+      }
     }
   }
 
