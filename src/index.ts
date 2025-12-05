@@ -20,3 +20,4 @@ export * from "./zeromq_transport";
 export * from "./vector_clock";
 export * from "./registry_gossip";
 export * from "./gossip_registry";
+export * from "./heartbeat";

@@ -24,6 +24,12 @@ import { Cluster } from "./cluster";
 import { PlacementEngine, PlacementStrategy } from "./placement";
 import { Logger, createLogger } from "./logger";
 import {
+  HeartbeatManager,
+  HeartbeatConfig,
+  HeartbeatPing,
+  DEFAULT_HEARTBEAT_CONFIG,
+} from "./heartbeat";
+import {
   ActorNotFoundError,
   ActorClassNotRegisteredError,
   RegistryLookupError,
@@ -167,8 +173,10 @@ export class ActorSystem implements HealthCheckable {
   private readonly supervisor: Supervisor;
   private readonly childSupervisor: ChildSupervisor;
   private readonly transport: Transport;
+  private readonly cluster: Cluster;
   private readonly registry: Registry;
   private readonly placementEngine: PlacementEngine;
+  private readonly heartbeatManager: HeartbeatManager;
   private readonly log: Logger;
   private _isShuttingDown = false;
   private _isRunning = false;
@@ -178,9 +186,11 @@ export class ActorSystem implements HealthCheckable {
     transport: Transport,
     registry: Registry,
     supervisorOptions?: SupervisionOptions,
+    heartbeatConfig?: Partial<HeartbeatConfig>,
   ) {
     this.id = cluster.nodeId;
     this.transport = transport;
+    this.cluster = cluster;
     this.registry = registry;
     this.placementEngine = new PlacementEngine(cluster);
     this.log = createLogger("ActorSystem", this.id);
@@ -193,12 +203,27 @@ export class ActorSystem implements HealthCheckable {
       },
     );
     this.childSupervisor = new ChildSupervisor(this);
+    this.heartbeatManager = new HeartbeatManager(
+      this.id,
+      transport,
+      cluster,
+      heartbeatConfig,
+    );
+
+    // Wire up heartbeat failure detection
+    this.heartbeatManager.on("node_failed", (nodeId: string) => {
+      this.log.warn("Heartbeat detected node failure", { nodeId });
+      this.handleNodeFailure(nodeId);
+    });
   }
 
   async start(): Promise<void> {
     this.transport.onRequest(this._handleRpcCall.bind(this));
     this.transport.onMessage(this._handleRpcCast.bind(this));
     this._isRunning = true;
+
+    // Start heartbeat manager for active failure detection
+    await this.heartbeatManager.start();
   }
 
   /**
@@ -275,6 +300,9 @@ export class ActorSystem implements HealthCheckable {
 
     const { timeout = 5000, drainMailboxes = true } = options;
     this._isShuttingDown = true;
+
+    // Stop heartbeat manager first to prevent false failure detection during shutdown
+    await this.heartbeatManager.stop();
 
     // Wait for mailboxes to drain (with timeout)
     if (drainMailboxes) {
@@ -2007,6 +2035,11 @@ export class ActorSystem implements HealthCheckable {
   }
 
   private async _handleRpcCall(rpcMessage: any): Promise<any> {
+    // Handle heartbeat:ping RPC
+    if (rpcMessage.type === "heartbeat:ping") {
+      return this.heartbeatManager.handlePing(rpcMessage as HeartbeatPing);
+    }
+
     // Handle watch:add RPC
     if (rpcMessage.type === "watch:add") {
       return this._handleRemoteWatchAdd(rpcMessage);
