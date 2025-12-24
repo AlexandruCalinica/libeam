@@ -132,6 +132,9 @@ describe("Actor Idle Timeout", () => {
       const ref = system.spawn(TimeoutTrackingActor);
       ref.cast({ type: "setIdleTimeout", timeoutMs: 50 });
 
+      // Wait for cast to be processed before timing starts
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
       // Wait for the timeout to fire
       await new Promise((resolve) => setTimeout(resolve, 100));
 
@@ -252,6 +255,9 @@ describe("Actor Idle Timeout", () => {
     it("should report accurate idle duration", async () => {
       const ref = system.spawn(TimeoutTrackingActor);
       ref.cast({ type: "setIdleTimeout", timeoutMs: 50 });
+
+      // Wait for cast to be processed before timing starts
+      await new Promise((resolve) => setTimeout(resolve, 10));
 
       await new Promise((resolve) => setTimeout(resolve, 100));
 

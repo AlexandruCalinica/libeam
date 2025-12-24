@@ -195,7 +195,7 @@ async function runNode1() {
   // Create registry for actor discovery
   const registryGossip = new RegistryGossip(config.nodeId, transport, cluster);
   await registryGossip.connect();
-  const registry = new GossipRegistry(registryGossip);
+  const registry = new GossipRegistry(config.nodeId, registryGossip);
   console.log(`[${config.nodeId}] Registry connected`);
 
   // Create actor system
@@ -277,7 +277,7 @@ async function runNode2() {
   // Create registry for actor discovery
   const registryGossip = new RegistryGossip(config.nodeId, transport, cluster);
   await registryGossip.connect();
-  const registry = new GossipRegistry(registryGossip);
+  const registry = new GossipRegistry(config.nodeId, registryGossip);
   console.log(`[${config.nodeId}] Registry connected`);
 
   // Create actor system
