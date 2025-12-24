@@ -52,6 +52,7 @@ libeam implements the core primitives from Elixir/OTP, adapted for the Node.js r
 | Cluster membership | `:net_kernel` | `Cluster`, `GossipProtocol` |
 | Remote messaging | Transparent | Via `Transport` |
 | Registry | `Registry`, `:global` | `Registry`, `GossipRegistry` |
+| Actor migration | Manual process migration | `system.migrate()` |
 
 ### Not Implemented (Not Needed in Node.js)
 
@@ -65,10 +66,7 @@ libeam implements the core primitives from Elixir/OTP, adapted for the Node.js r
 
 ### Not Yet Implemented
 
-| Feature | Description |
-|---------|-------------|
-| Distributed monitors | Receive notifications when remote nodes go down |
-| Distributed links | Links that work across nodes |
+All core OTP features have been implemented. See the feature table above for the full list.
 
 ## Installation
 
@@ -740,6 +738,8 @@ try {
 | `TransportError` | `TRANSPORT_ERROR` | Network transport failure |
 | `PeerNotFoundError` | `PEER_NOT_FOUND` | Peer node not known |
 | `ActorClassNotRegisteredError` | `ACTOR_CLASS_NOT_REGISTERED` | Actor class not registered for remote spawn |
+| `ActorNotMigratableError` | `ACTOR_NOT_MIGRATABLE` | Actor doesn't implement `Migratable` |
+| `ActorHasChildrenError` | `ACTOR_HAS_CHILDREN` | Actor has child actors |
 
 ## Health Checks
 
@@ -814,6 +814,119 @@ app.get("/health", async (req, res) => {
 | `healthy` | Component is functioning normally |
 | `degraded` | Component is working but with issues (e.g., shutting down, high load) |
 | `unhealthy` | Component is not functioning |
+
+## Actor Migration
+
+Actors can be migrated between nodes while preserving their state and pending messages.
+
+### Making Actors Migratable
+
+Implement the `Migratable` interface to enable migration:
+
+```typescript
+import { Actor, Migratable } from "libeam";
+
+interface CounterState {
+  count: number;
+  history: string[];
+}
+
+class CounterActor extends Actor implements Migratable {
+  private count = 0;
+  private history: string[] = [];
+
+  handleCall(message: any): number {
+    if (message.type === "get") return this.count;
+    if (message.type === "increment") return ++this.count;
+    return 0;
+  }
+
+  handleCast(message: any): void {
+    if (message.type === "reset") this.count = 0;
+  }
+
+  getState(): CounterState {
+    return { count: this.count, history: [...this.history] };
+  }
+
+  setState(state: CounterState): void {
+    this.count = state.count;
+    this.history = [...state.history];
+  }
+}
+```
+
+### Migrating an Actor
+
+Use `system.migrate()` to move an actor to another node:
+
+```typescript
+const ref = system.spawn(CounterActor, { name: "my-counter", args: [100] });
+
+ref.cast({ type: "increment" });
+ref.cast({ type: "increment" });
+
+const result = await system.migrate("my-counter", "node2");
+
+if (result.success) {
+  console.log(`Migrated to ${result.newNodeId}`);
+  console.log(`New actor ID: ${result.newActorId}`);
+} else {
+  console.log(`Migration failed: ${result.error}`);
+}
+```
+
+### Migration Process
+
+1. **Pause mailbox** - Stop processing new messages on source node
+2. **Reserve name** - Target node reserves the actor name (with TTL)
+3. **Drain mailbox** - Collect pending messages
+4. **Serialize state** - Call `getState()` on source actor
+5. **Transfer** - Send state and pending messages to target
+6. **Restore** - Create actor on target, call `init()` then `setState()`
+7. **Inject messages** - Re-queue pending messages on target
+8. **Notify watchers** - Send `MovedMessage` to all watchers/linked actors
+9. **Cleanup** - Remove actor from source node
+
+### Watcher Notifications
+
+Actors watching a migrating actor receive a `MovedMessage`:
+
+```typescript
+class ObserverActor extends Actor {
+  handleInfo(message: InfoMessage): void {
+    if (message.type === "moved") {
+      const moved = message as MovedMessage;
+      console.log(`Actor moved: ${moved.oldNodeId} → ${moved.newNodeId}`);
+      console.log(`New actor ID: ${moved.newActorId}`);
+    }
+  }
+}
+```
+
+### Constraints
+
+| Constraint | Reason |
+|------------|--------|
+| Actor must implement `Migratable` | State serialization required |
+| Actor cannot have children | Child actors would be orphaned |
+| State must be JSON-serializable | Transferred over network |
+| Target node must have actor class registered | Cannot instantiate unknown class |
+
+### Error Types
+
+| Error | Code | Description |
+|-------|------|-------------|
+| `ActorNotMigratableError` | `ACTOR_NOT_MIGRATABLE` | Actor doesn't implement `Migratable` |
+| `ActorHasChildrenError` | `ACTOR_HAS_CHILDREN` | Actor has child actors |
+| `MigrationFailedError` | `MIGRATION_FAILED` | General migration failure |
+| `NameReservationError` | `NAME_RESERVATION_FAILED` | Could not reserve name on target |
+
+Run the migration example:
+
+```bash
+npx ts-node examples/actor_migration.ts
+```
 
 ## Architecture
 

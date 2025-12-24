@@ -88,9 +88,36 @@ export interface TimeoutMessage {
 }
 
 /**
+ * Message sent to watchers/linked actors when an actor has been migrated to another node.
+ * Unlike DownMessage/ExitMessage, this indicates the actor is still alive but at a new location.
+ * Delivered via handleInfo().
+ *
+ * Either watchRef or linkRef will be present, depending on whether this is a watch or link notification.
+ */
+export interface MovedMessage {
+  type: "moved";
+  /** The watch reference (if this is a watch notification) */
+  watchRef?: WatchRef;
+  /** The link reference (if this is a link notification) */
+  linkRef?: LinkRef;
+  /** Reference to the actor that moved (points to new location) */
+  actorRef: ActorRef;
+  /** The node the actor moved from */
+  oldNodeId: string;
+  /** The node the actor moved to */
+  newNodeId: string;
+  /** The new actor instance ID on the target node */
+  newActorId: string;
+}
+
+/**
  * System info messages delivered to actors via handleInfo().
  */
-export type InfoMessage = DownMessage | ExitMessage | TimeoutMessage;
+export type InfoMessage =
+  | DownMessage
+  | ExitMessage
+  | TimeoutMessage
+  | MovedMessage;
 
 /**
  * Strategy for supervising child actors.
@@ -138,6 +165,37 @@ export const DEFAULT_CHILD_SUPERVISION: ChildSupervisionOptions = {
   maxRestarts: 3,
   periodMs: 5000,
 };
+
+/**
+ * Optional interface for actors that support migration between nodes.
+ * Actors implementing this interface can have their state serialized,
+ * transferred to another node, and restored.
+ */
+export interface Migratable {
+  /**
+   * Serialize actor state for transfer during migration.
+   * The returned value must be JSON-serializable.
+   * @returns The serialized state (can be async for complex state)
+   */
+  getState(): unknown | Promise<unknown>;
+
+  /**
+   * Restore actor state after migration.
+   * Called on the target node after the actor instance is created.
+   * @param state The serialized state from getState()
+   */
+  setState(state: unknown): void | Promise<void>;
+}
+
+/**
+ * Type guard to check if an actor implements the Migratable interface.
+ */
+export function isMigratable(actor: Actor): actor is Actor & Migratable {
+  return (
+    typeof (actor as any).getState === "function" &&
+    typeof (actor as any).setState === "function"
+  );
+}
 
 /**
  * A unique identifier for an actor.

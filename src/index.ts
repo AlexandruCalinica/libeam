@@ -21,3 +21,4 @@ export * from "./vector_clock";
 export * from "./registry_gossip";
 export * from "./gossip_registry";
 export * from "./heartbeat";
+export * from "./migration";

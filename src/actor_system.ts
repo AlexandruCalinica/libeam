@@ -12,9 +12,23 @@ import {
   DownMessage,
   ExitMessage,
   TimeoutMessage,
+  MovedMessage,
   StashedMessage,
   isInitContinue,
+  isMigratable,
 } from "./actor";
+import {
+  MigratePrepareRequest,
+  MigratePrepareResponse,
+  MigrateExecuteRequest,
+  MigrateExecuteResponse,
+  MigrateRollbackRequest,
+  MigrateRollbackResponse,
+  ActorNotMigratableError,
+  ActorHasChildrenError,
+  MigrationFailedError,
+  MigrationResult,
+} from "./migration";
 import { v4 as uuidv4 } from "uuid";
 import { Supervisor, SupervisionOptions } from "./supervisor";
 import { ChildSupervisor } from "./child_supervisor";
@@ -180,6 +194,8 @@ export class ActorSystem implements HealthCheckable {
   private readonly log: Logger;
   private _isShuttingDown = false;
   private _isRunning = false;
+  private readonly pausedMailboxes = new Set<string>();
+  private readonly processingActors = new Set<string>();
 
   constructor(
     cluster: Cluster,
@@ -350,9 +366,186 @@ export class ActorSystem implements HealthCheckable {
     this._isRunning = false;
   }
 
-  /**
-   * Waits for all mailboxes to drain, with a timeout.
-   */
+  async migrate(
+    actorName: string,
+    targetNodeId: string,
+    timeout: number = 30000,
+  ): Promise<MigrationResult> {
+    if (this._isShuttingDown) {
+      return { success: false, error: "System is shutting down" };
+    }
+
+    if (targetNodeId === this.id) {
+      return { success: false, error: "Cannot migrate to same node" };
+    }
+
+    const location = await this.registry.lookup(actorName);
+    if (!location) {
+      return { success: false, error: `Actor not found: ${actorName}` };
+    }
+
+    if (location.nodeId !== this.id) {
+      return {
+        success: false,
+        error: `Actor ${actorName} is not on this node`,
+      };
+    }
+
+    const actor = this.actors.get(location.actorId);
+    if (!actor) {
+      return { success: false, error: `Actor instance not found` };
+    }
+
+    if (!isMigratable(actor)) {
+      throw new ActorNotMigratableError(location.actorId);
+    }
+
+    const childCount = actor.context.children.size;
+    if (childCount > 0) {
+      throw new ActorHasChildrenError(location.actorId, childCount);
+    }
+
+    const metadata = this.actorMetadata.get(location.actorId);
+    if (!metadata) {
+      return { success: false, error: "Actor metadata not found" };
+    }
+
+    const actorClassName = metadata.actorClass.name;
+    const initArgs = metadata.options.args || [];
+
+    this.pauseMailbox(location.actorId);
+
+    let prepareResponse: MigratePrepareResponse;
+    try {
+      prepareResponse = await this.transport.request(
+        targetNodeId,
+        {
+          type: "migrate:prepare",
+          actorName,
+          actorClassName,
+          sourceNodeId: this.id,
+        } as MigratePrepareRequest,
+        timeout,
+      );
+    } catch (err) {
+      this.resumeMailbox(location.actorId);
+      return {
+        success: false,
+        error: `Failed to prepare migration: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+
+    if (!prepareResponse.ready) {
+      this.resumeMailbox(location.actorId);
+      return {
+        success: false,
+        error: prepareResponse.error || "Target not ready",
+      };
+    }
+
+    const reservationId = prepareResponse.reservationId!;
+
+    const pendingMessages = await this.drainMailbox(location.actorId, timeout);
+    const state = await Promise.resolve(actor.getState());
+
+    let executeResponse: MigrateExecuteResponse;
+    try {
+      executeResponse = await this.transport.request(
+        targetNodeId,
+        {
+          type: "migrate:execute",
+          reservationId,
+          actorName,
+          actorClassName,
+          sourceNodeId: this.id,
+          state,
+          initArgs,
+          pendingMessages: pendingMessages.map((pm) => ({
+            type: pm.type,
+            message: pm.message,
+          })),
+        } as MigrateExecuteRequest,
+        timeout,
+      );
+    } catch (err) {
+      await this.transport
+        .request(
+          targetNodeId,
+          {
+            type: "migrate:rollback",
+            reservationId,
+            actorName,
+          } as MigrateRollbackRequest,
+          5000,
+        )
+        .catch(() => {});
+
+      this.injectMessages(location.actorId, pendingMessages);
+      this.resumeMailbox(location.actorId);
+
+      return {
+        success: false,
+        error: `Failed to execute migration: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+
+    if (!executeResponse.success) {
+      this.injectMessages(location.actorId, pendingMessages);
+      this.resumeMailbox(location.actorId);
+
+      return {
+        success: false,
+        error: executeResponse.error || "Migration execution failed",
+      };
+    }
+
+    await this.registry.unregister(actorName);
+
+    this.notifyWatchersOfMigration(
+      location.actorId,
+      actorName,
+      this.id,
+      targetNodeId,
+      executeResponse.newActorId!,
+    );
+
+    this.notifyLinkedActorsOfMigration(
+      location.actorId,
+      actorName,
+      this.id,
+      targetNodeId,
+      executeResponse.newActorId!,
+    );
+
+    this._cleanupActorForMigration(location.actorId, actor);
+
+    this.log.info("Actor migrated successfully", {
+      actorName,
+      sourceNode: this.id,
+      targetNode: targetNodeId,
+      newActorId: executeResponse.newActorId,
+    });
+
+    return {
+      success: true,
+      newActorId: executeResponse.newActorId,
+      newNodeId: targetNodeId,
+    };
+  }
+
+  private _cleanupActorForMigration(actorId: string, actor: Actor): void {
+    for (const timerEntry of actor.context.timers.values()) {
+      clearTimeout(timerEntry.handle);
+    }
+    actor.context.timers.clear();
+
+    this.actors.delete(actorId);
+    this.mailboxes.delete(actorId);
+    this.actorMetadata.delete(actorId);
+    this.pausedMailboxes.delete(actorId);
+    this.processingActors.delete(actorId);
+  }
+
   private async _drainMailboxes(timeout: number): Promise<void> {
     const startTime = Date.now();
 
@@ -1515,6 +1708,380 @@ export class ActorSystem implements HealthCheckable {
     });
   }
 
+  // ============ Migration Notifications ============
+
+  notifyWatchersOfMigration(
+    actorId: string,
+    actorName: string | undefined,
+    oldNodeId: string,
+    newNodeId: string,
+    newActorId: string,
+  ): void {
+    const newActorRef = new ActorRef(
+      new ActorId(newNodeId, newActorId, actorName),
+      this,
+    );
+
+    // Notify local watchers
+    const watchRefIds = this.watchedBy.get(actorId);
+    if (watchRefIds && watchRefIds.size > 0) {
+      const watchRefIdsCopy = Array.from(watchRefIds);
+
+      for (const watchRefId of watchRefIdsCopy) {
+        const entry = this.watches.get(watchRefId);
+        if (entry) {
+          this._sendMovedMessageToWatcher(
+            entry.watchRef,
+            newActorRef,
+            oldNodeId,
+            newNodeId,
+            newActorId,
+          );
+          this.unwatch(entry.watchRef);
+        }
+      }
+    }
+
+    // Notify remote watchers
+    const remoteWatcherSet = this.remoteWatchers.get(actorId);
+    if (remoteWatcherSet && remoteWatcherSet.size > 0) {
+      const remoteWatchersCopy = Array.from(remoteWatcherSet);
+
+      for (const remoteWatcher of remoteWatchersCopy) {
+        this._notifyRemoteWatcherOfMigration(
+          remoteWatcher,
+          actorName,
+          oldNodeId,
+          newNodeId,
+          newActorId,
+        );
+        remoteWatcherSet.delete(remoteWatcher);
+      }
+
+      if (remoteWatcherSet.size === 0) {
+        this.remoteWatchers.delete(actorId);
+      }
+    }
+  }
+
+  private _sendMovedMessageToWatcher(
+    watchRef: WatchRef,
+    newActorRef: ActorRef,
+    oldNodeId: string,
+    newNodeId: string,
+    newActorId: string,
+  ): void {
+    const watcherActor = this.actors.get(watchRef.watcherId);
+    if (!watcherActor) {
+      return;
+    }
+
+    const movedMessage: MovedMessage = {
+      type: "moved",
+      watchRef,
+      actorRef: newActorRef,
+      oldNodeId,
+      newNodeId,
+      newActorId,
+    };
+
+    Promise.resolve(watcherActor.handleInfo(movedMessage)).catch((err) => {
+      this.log.error("Error in handleInfo for MOVED message", err, {
+        watcherId: watchRef.watcherId,
+        newActorId,
+      });
+    });
+  }
+
+  private _notifyRemoteWatcherOfMigration(
+    remoteWatcher: RemoteWatcherInfo,
+    actorName: string | undefined,
+    oldNodeId: string,
+    newNodeId: string,
+    newActorId: string,
+  ): void {
+    this.log.debug("Notifying remote watcher of actor migration", {
+      watcherNodeId: remoteWatcher.watcherNodeId,
+      watcherActorId: remoteWatcher.watcherActorId,
+      oldNodeId,
+      newNodeId,
+      newActorId,
+    });
+
+    this.transport
+      .send(remoteWatcher.watcherNodeId, {
+        type: "watch:moved",
+        watchRefId: remoteWatcher.watchRefId,
+        actorName,
+        oldNodeId,
+        newNodeId,
+        newActorId,
+      })
+      .catch((err) => {
+        this.log.debug("Failed to notify remote watcher of migration", {
+          watcherNodeId: remoteWatcher.watcherNodeId,
+          error: err.message,
+        });
+      });
+  }
+
+  private _handleRemoteWatcherMoved(notification: {
+    type: "watch:moved";
+    watchRefId: string;
+    actorName?: string;
+    oldNodeId: string;
+    newNodeId: string;
+    newActorId: string;
+  }): void {
+    const { watchRefId, actorName, oldNodeId, newNodeId, newActorId } =
+      notification;
+
+    this.log.debug("Received remote watch:moved notification", {
+      watchRefId,
+      oldNodeId,
+      newNodeId,
+      newActorId,
+    });
+
+    const remoteEntry = this.remoteWatches.get(watchRefId);
+    if (!remoteEntry) {
+      return;
+    }
+
+    this.remoteWatches.delete(watchRefId);
+
+    const watcherActor = this.actors.get(remoteEntry.watcherRef.id.id);
+    if (!watcherActor) {
+      return;
+    }
+
+    watcherActor.context.watches.delete(watchRefId);
+
+    const newActorRef = new ActorRef(
+      new ActorId(newNodeId, newActorId, actorName),
+      this,
+    );
+
+    const movedMessage: MovedMessage = {
+      type: "moved",
+      watchRef: remoteEntry.watchRef,
+      actorRef: newActorRef,
+      oldNodeId,
+      newNodeId,
+      newActorId,
+    };
+
+    Promise.resolve(watcherActor.handleInfo(movedMessage)).catch((err) => {
+      this.log.error("Error in handleInfo for remote MOVED message", err, {
+        watcherId: remoteEntry.watcherRef.id.id,
+        newActorId,
+      });
+    });
+  }
+
+  notifyLinkedActorsOfMigration(
+    actorId: string,
+    actorName: string | undefined,
+    oldNodeId: string,
+    newNodeId: string,
+    newActorId: string,
+  ): void {
+    const newActorRef = new ActorRef(
+      new ActorId(newNodeId, newActorId, actorName),
+      this,
+    );
+
+    // Notify local linked actors
+    this._notifyLocalLinkedActorsOfMigration(
+      actorId,
+      newActorRef,
+      oldNodeId,
+      newNodeId,
+      newActorId,
+    );
+
+    // Notify remote linkers
+    this._notifyRemoteLinkersOfMigration(
+      actorId,
+      actorName,
+      oldNodeId,
+      newNodeId,
+      newActorId,
+    );
+  }
+
+  private _notifyLocalLinkedActorsOfMigration(
+    actorId: string,
+    newActorRef: ActorRef,
+    oldNodeId: string,
+    newNodeId: string,
+    newActorId: string,
+  ): void {
+    const linkRefIds = this.linkedWith.get(actorId);
+    if (!linkRefIds || linkRefIds.size === 0) {
+      return;
+    }
+
+    const linkRefIdsCopy = Array.from(linkRefIds);
+
+    for (const linkRefId of linkRefIdsCopy) {
+      const entry = this.links.get(linkRefId);
+      if (entry) {
+        const otherActorId =
+          entry.actor1Ref.id.id === actorId
+            ? entry.actor2Ref.id.id
+            : entry.actor1Ref.id.id;
+
+        const otherActor = this.actors.get(otherActorId);
+        if (otherActor) {
+          const movedMessage: MovedMessage = {
+            type: "moved",
+            linkRef: entry.linkRef,
+            actorRef: newActorRef,
+            oldNodeId,
+            newNodeId,
+            newActorId,
+          };
+
+          Promise.resolve(otherActor.handleInfo(movedMessage)).catch((err) => {
+            this.log.error("Error in handleInfo for link MOVED message", err, {
+              actorId: otherActorId,
+              newActorId,
+            });
+          });
+        }
+
+        this.unlink(entry.linkRef);
+        continue;
+      }
+
+      const remoteEntry = this.remoteLinks.get(linkRefId);
+      if (remoteEntry) {
+        this._notifyRemoteLinkExitForMigration(remoteEntry, actorId);
+      }
+    }
+  }
+
+  private _notifyRemoteLinkersOfMigration(
+    actorId: string,
+    actorName: string | undefined,
+    oldNodeId: string,
+    newNodeId: string,
+    newActorId: string,
+  ): void {
+    const remoteLinkerSet = this.remoteLinkers.get(actorId);
+    if (!remoteLinkerSet || remoteLinkerSet.size === 0) {
+      return;
+    }
+
+    const remoteLinkersCopy = Array.from(remoteLinkerSet);
+
+    for (const remoteLinker of remoteLinkersCopy) {
+      this.log.debug("Notifying remote linker of actor migration", {
+        linkerNodeId: remoteLinker.linkerNodeId,
+        linkerActorId: remoteLinker.linkerActorId,
+        oldNodeId,
+        newNodeId,
+        newActorId,
+      });
+
+      this.transport.send(remoteLinker.linkerNodeId, {
+        type: "link:moved",
+        linkRefId: remoteLinker.linkRefId,
+        actorName,
+        oldNodeId,
+        newNodeId,
+        newActorId,
+      });
+
+      remoteLinkerSet.delete(remoteLinker);
+    }
+
+    if (remoteLinkerSet.size === 0) {
+      this.remoteLinkers.delete(actorId);
+    }
+  }
+
+  private _notifyRemoteLinkExitForMigration(
+    remoteEntry: RemoteLinkEntry,
+    exitedActorId: string,
+  ): void {
+    this.remoteLinks.delete(remoteEntry.linkRef.id);
+
+    const links = this.linkedWith.get(exitedActorId);
+    if (links) {
+      links.delete(remoteEntry.linkRef.id);
+      if (links.size === 0) {
+        this.linkedWith.delete(exitedActorId);
+      }
+    }
+  }
+
+  private _handleRemoteLinkMoved(notification: {
+    type: "link:moved";
+    linkRefId: string;
+    actorName?: string;
+    oldNodeId: string;
+    newNodeId: string;
+    newActorId: string;
+  }): void {
+    const { linkRefId, actorName, oldNodeId, newNodeId, newActorId } =
+      notification;
+
+    this.log.debug("Received remote link:moved notification", {
+      linkRefId,
+      oldNodeId,
+      newNodeId,
+      newActorId,
+    });
+
+    const remoteEntry = this.remoteLinks.get(linkRefId);
+    if (!remoteEntry) {
+      return;
+    }
+
+    this.remoteLinks.delete(linkRefId);
+
+    const localActorId = remoteEntry.localActorRef.id.id;
+    const links = this.linkedWith.get(localActorId);
+    if (links) {
+      links.delete(linkRefId);
+      if (links.size === 0) {
+        this.linkedWith.delete(localActorId);
+      }
+    }
+
+    const localActor = this.actors.get(localActorId);
+    if (!localActor) {
+      return;
+    }
+
+    localActor.context.links.delete(linkRefId);
+
+    const newActorRef = new ActorRef(
+      new ActorId(newNodeId, newActorId, actorName),
+      this,
+    );
+
+    const linkRef = new LinkRef(linkRefId, localActorId, newActorId);
+
+    const movedMessage: MovedMessage = {
+      type: "moved",
+      linkRef,
+      actorRef: newActorRef,
+      oldNodeId,
+      newNodeId,
+      newActorId,
+    };
+
+    Promise.resolve(localActor.handleInfo(movedMessage)).catch((err) => {
+      this.log.error("Error in handleInfo for remote link MOVED message", err, {
+        localActorId,
+        newActorId,
+      });
+    });
+  }
+
   // ============ Timer Management ============
 
   /**
@@ -2063,6 +2630,21 @@ export class ActorSystem implements HealthCheckable {
     // Handle child:stop RPC
     if (rpcMessage.type === "child:stop") {
       return this._handleRemoteChildStop(rpcMessage);
+    }
+
+    // Handle migrate:prepare RPC
+    if (rpcMessage.type === "migrate:prepare") {
+      return this._handleMigratePrepare(rpcMessage);
+    }
+
+    // Handle migrate:execute RPC
+    if (rpcMessage.type === "migrate:execute") {
+      return this._handleMigrateExecute(rpcMessage);
+    }
+
+    // Handle migrate:rollback RPC
+    if (rpcMessage.type === "migrate:rollback") {
+      return this._handleMigrateRollback(rpcMessage);
     }
 
     // Handle actor call
@@ -3320,6 +3902,18 @@ export class ActorSystem implements HealthCheckable {
       return;
     }
 
+    // Handle watch:moved message (remote watched actor migrated)
+    if (type === "watch:moved") {
+      this._handleRemoteWatcherMoved(rpcMessage);
+      return;
+    }
+
+    // Handle link:moved message (remote linked actor migrated)
+    if (type === "link:moved") {
+      this._handleRemoteLinkMoved(rpcMessage);
+      return;
+    }
+
     // Handle child:crash message (remote child crashed)
     if (type === "child:crash") {
       this._handleRemoteChildCrash(rpcMessage);
@@ -3380,54 +3974,310 @@ export class ActorSystem implements HealthCheckable {
     const mailbox = this.mailboxes.get(id);
     const actor = this.actors.get(id);
 
-    // If actor or mailbox no longer exists, stop processing
     if (!mailbox || !actor) return;
+
+    if (this.pausedMailboxes.has(id)) {
+      return;
+    }
 
     if (mailbox.length > 0) {
       const stashedMessage = mailbox.shift() as StashedMessage;
 
-      // Set current message so stash() knows what to stash
       actor.context.currentMessage = stashedMessage;
 
-      // Reset idle timeout since we're processing a message
       this._resetIdleTimeout(id, actor);
+
+      this.processingActors.add(id);
 
       try {
         if (stashedMessage.type === "cast") {
           await Promise.resolve(actor.handleCast(stashedMessage.message));
         } else if (stashedMessage.type === "call") {
-          // Handle call message from mailbox (was stashed or queued)
           try {
             const result = await Promise.resolve(
               actor.handleCall(stashedMessage.message),
             );
-            // Only resolve if the message wasn't re-stashed
-            // (if it was stashed, it's now in actor.context.stash)
             const wasStashed = actor.context.stash.includes(stashedMessage);
             if (!wasStashed && stashedMessage.resolve) {
               stashedMessage.resolve(result);
             }
           } catch (err) {
-            // Only reject if the message wasn't stashed
             const wasStashed = actor.context.stash.includes(stashedMessage);
             if (!wasStashed && stashedMessage.reject) {
               stashedMessage.reject(err);
             } else if (!wasStashed) {
-              throw err; // Re-throw to trigger crash handling
+              throw err;
             }
           }
         }
       } catch (err) {
         this.supervisor.handleCrash(actor.self, err);
       } finally {
-        // Clear current message
         actor.context.currentMessage = undefined;
+        this.processingActors.delete(id);
       }
     }
 
-    // Only schedule next iteration if actor still exists
-    if (this.actors.has(id) && this.mailboxes.has(id)) {
+    if (
+      this.actors.has(id) &&
+      this.mailboxes.has(id) &&
+      !this.pausedMailboxes.has(id)
+    ) {
       setTimeout(() => this.processMailbox(id), 0);
     }
+  }
+
+  pauseMailbox(actorId: string): boolean {
+    if (!this.actors.has(actorId)) {
+      return false;
+    }
+    this.pausedMailboxes.add(actorId);
+    this.log.debug("Mailbox paused", { actorId });
+    return true;
+  }
+
+  resumeMailbox(actorId: string): boolean {
+    if (!this.actors.has(actorId)) {
+      return false;
+    }
+    const wasPaused = this.pausedMailboxes.delete(actorId);
+    if (wasPaused) {
+      this.log.debug("Mailbox resumed", { actorId });
+      this.processMailbox(actorId);
+    }
+    return wasPaused;
+  }
+
+  isMailboxPaused(actorId: string): boolean {
+    return this.pausedMailboxes.has(actorId);
+  }
+
+  async drainMailbox(
+    actorId: string,
+    timeout: number = 5000,
+  ): Promise<StashedMessage[]> {
+    const actor = this.actors.get(actorId);
+    const mailbox = this.mailboxes.get(actorId);
+
+    if (!actor || !mailbox) {
+      return [];
+    }
+
+    this.pauseMailbox(actorId);
+
+    const startTime = Date.now();
+    while (this.processingActors.has(actorId)) {
+      if (Date.now() - startTime >= timeout) {
+        this.log.warn("Drain timeout waiting for message processing", {
+          actorId,
+          timeout,
+        });
+        break;
+      }
+      await new Promise((r) => setTimeout(r, 5));
+    }
+
+    const pendingMessages = [...mailbox];
+    mailbox.length = 0;
+
+    this.log.debug("Mailbox drained", {
+      actorId,
+      messageCount: pendingMessages.length,
+    });
+
+    return pendingMessages;
+  }
+
+  injectMessages(actorId: string, messages: StashedMessage[]): boolean {
+    const mailbox = this.mailboxes.get(actorId);
+    if (!mailbox) {
+      return false;
+    }
+
+    mailbox.unshift(...messages);
+
+    this.log.debug("Messages injected", {
+      actorId,
+      messageCount: messages.length,
+    });
+
+    return true;
+  }
+
+  getPendingMessages(actorId: string): StashedMessage[] {
+    const mailbox = this.mailboxes.get(actorId);
+    return mailbox ? [...mailbox] : [];
+  }
+
+  private async _handleMigratePrepare(
+    request: MigratePrepareRequest,
+  ): Promise<MigratePrepareResponse> {
+    const { actorName, actorClassName, sourceNodeId } = request;
+
+    this.log.debug("Received migrate:prepare request", {
+      actorName,
+      actorClassName,
+      sourceNodeId,
+    });
+
+    const actorClass = this.actorClasses.get(actorClassName);
+    if (!actorClass) {
+      return {
+        ready: false,
+        error: `Actor class not registered: ${actorClassName}`,
+      };
+    }
+
+    if (!this.registry.reserveName) {
+      return {
+        ready: false,
+        error: "Registry does not support name reservation",
+      };
+    }
+
+    const reserveResult = await this.registry.reserveName(actorName, this.id);
+    if (!reserveResult) {
+      return {
+        ready: false,
+        error: `Failed to reserve name: ${actorName}`,
+      };
+    }
+
+    return {
+      ready: true,
+      reservationId: reserveResult.reservationId,
+    };
+  }
+
+  private async _handleMigrateExecute(
+    request: MigrateExecuteRequest,
+  ): Promise<MigrateExecuteResponse> {
+    const {
+      reservationId,
+      actorName,
+      actorClassName,
+      sourceNodeId,
+      state,
+      initArgs,
+      pendingMessages,
+    } = request;
+
+    this.log.debug("Received migrate:execute request", {
+      reservationId,
+      actorName,
+      actorClassName,
+      sourceNodeId,
+      pendingMessageCount: pendingMessages.length,
+    });
+
+    const actorClass = this.actorClasses.get(actorClassName);
+    if (!actorClass) {
+      return {
+        success: false,
+        error: `Actor class not registered: ${actorClassName}`,
+      };
+    }
+
+    try {
+      const instanceId = uuidv4();
+      const actorId = new ActorId(this.id, instanceId, actorName);
+      const actorRef = new ActorRef(actorId, this);
+
+      const actor = new actorClass();
+      actor.self = actorRef;
+      actor.context = {
+        children: new Set(),
+        childOrder: [],
+        system: this,
+        watches: new Map(),
+        links: new Map(),
+        stash: [],
+        timers: new Map(),
+        trapExit: false,
+        idleTimeout: 0,
+        lastActivityTime: Date.now(),
+      };
+
+      this.actors.set(instanceId, actor);
+      this.mailboxes.set(instanceId, []);
+      this.actorMetadata.set(instanceId, {
+        actorClass,
+        options: { name: actorName, args: initArgs },
+      });
+
+      await Promise.resolve(actor.init(...initArgs));
+
+      if (isMigratable(actor)) {
+        await Promise.resolve(actor.setState(state));
+      }
+
+      const mailboxMessages: StashedMessage[] = pendingMessages.map((pm) => {
+        if (pm.type === "cast") {
+          return { type: "cast", message: pm.message };
+        }
+        return { type: "call", message: pm.message };
+      });
+      this.injectMessages(instanceId, mailboxMessages);
+
+      if (this.registry.confirmReservation) {
+        const confirmed = await this.registry.confirmReservation(
+          reservationId,
+          instanceId,
+        );
+        if (!confirmed) {
+          this.actors.delete(instanceId);
+          this.mailboxes.delete(instanceId);
+          this.actorMetadata.delete(instanceId);
+          return {
+            success: false,
+            error: "Failed to confirm name reservation",
+          };
+        }
+      } else {
+        await this.registry.register(actorName, this.id, instanceId);
+      }
+
+      this.processMailbox(instanceId);
+
+      this.log.info("Actor migrated successfully", {
+        actorName,
+        newActorId: instanceId,
+        sourceNodeId,
+      });
+
+      return {
+        success: true,
+        newActorId: instanceId,
+      };
+    } catch (err) {
+      this.log.error("Migration execute failed", err as Error, {
+        actorName,
+        reservationId,
+      });
+
+      if (this.registry.releaseReservation) {
+        await this.registry.releaseReservation(reservationId);
+      }
+
+      return {
+        success: false,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+  }
+
+  private async _handleMigrateRollback(request: MigrateRollbackRequest): Promise<MigrateRollbackResponse> {
+    const { reservationId, actorName } = request;
+
+    this.log.debug("Received migrate:rollback request", {
+      reservationId,
+      actorName,
+    });
+
+    if (this.registry.releaseReservation) {
+      await this.registry.releaseReservation(reservationId);
+    }
+
+    return { success: true };
   }
 }

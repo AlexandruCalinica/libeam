@@ -169,4 +169,5 @@ main().catch(console.error);
 | `actor_links.ts` | Intermediate | Bidirectional crash propagation with links |
 | `distributed_watching.ts` | Intermediate | Remote actor watching across nodes |
 | `distributed_linking.ts` | Intermediate | Remote actor linking with crash propagation |
+| `actor_migration.ts` | Intermediate | Actor migration between nodes with state preservation |
 | `distributed_ping_pong.ts` | Advanced | Real distributed actors via ZeroMQ |
