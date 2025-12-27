@@ -40,6 +40,26 @@ export class NameReservationError extends LibeamError {
   }
 }
 
+export class MigrationInProgressError extends LibeamError {
+  constructor(actorName: string, targetNodeId: string) {
+    super(
+      "MIGRATION_IN_PROGRESS",
+      `Actor ${actorName} is migrating to ${targetNodeId}, please retry`,
+      { actorName, targetNodeId },
+    );
+  }
+}
+
+export class StateSerializationTimeoutError extends LibeamError {
+  constructor(actorName: string, timeoutMs: number) {
+    super(
+      "STATE_SERIALIZATION_TIMEOUT",
+      `Actor ${actorName} state serialization timed out after ${timeoutMs}ms`,
+      { actorName, timeoutMs },
+    );
+  }
+}
+
 export interface MigratePrepareRequest {
   type: "migrate:prepare";
   actorName: string;

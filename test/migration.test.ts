@@ -12,6 +12,8 @@ import {
   ActorRef,
   WatchRef,
   LinkRef,
+  MigrationInProgressError,
+  StateSerializationTimeoutError,
 } from "../src";
 
 class MockCluster implements Cluster {
@@ -729,5 +731,167 @@ describe("Migration Watcher/Link Notifications", () => {
     await new Promise((r) => setTimeout(r, 50));
 
     expect(linkerActor.context.links.size).toBe(0);
+  });
+});
+
+class SlowStateActor extends Actor implements Migratable {
+  private value = 0;
+  private stateDelayMs = 0;
+
+  init(initial: number = 0, stateDelayMs: number = 0) {
+    this.value = initial;
+    this.stateDelayMs = stateDelayMs;
+  }
+
+  handleCall(message: { type: string; delayMs?: number }): number {
+    if (message.type === "get") return this.value;
+    if (message.type === "setStateDelay" && message.delayMs !== undefined) {
+      this.stateDelayMs = message.delayMs;
+      return this.stateDelayMs;
+    }
+    return 0;
+  }
+
+  handleCast(message: { type: string; amount?: number }): void {
+    if (message.type === "set" && message.amount !== undefined) {
+      this.value = message.amount;
+    }
+  }
+
+  async getState(): Promise<{ value: number }> {
+    if (this.stateDelayMs > 0) {
+      await new Promise((r) => setTimeout(r, this.stateDelayMs));
+    }
+    return { value: this.value };
+  }
+
+  setState(state: { value: number }): void {
+    this.value = state.value;
+  }
+}
+
+class SlowProcessingActor extends Actor implements Migratable {
+  private value = 0;
+  private processDelayMs = 0;
+
+  init(initial: number = 0, processDelayMs: number = 0) {
+    this.value = initial;
+    this.processDelayMs = processDelayMs;
+  }
+
+  async handleCall(message: { type: string }): Promise<number> {
+    if (this.processDelayMs > 0) {
+      await new Promise((r) => setTimeout(r, this.processDelayMs));
+    }
+    if (message.type === "get") return this.value;
+    return 0;
+  }
+
+  handleCast(message: { type: string; amount?: number }): void {
+    if (message.type === "set" && message.amount !== undefined) {
+      this.value = message.amount;
+    }
+  }
+
+  getState(): { value: number } {
+    return { value: this.value };
+  }
+
+  setState(state: { value: number }): void {
+    this.value = state.value;
+  }
+}
+
+describe("Migration Edge Cases", () => {
+  let transport1: InMemoryTransport;
+  let transport2: InMemoryTransport;
+  let registry1: InMemoryRegistry;
+  let registry2: InMemoryRegistry;
+  let system1: ActorSystem;
+  let system2: ActorSystem;
+
+  beforeEach(async () => {
+    transport1 = new InMemoryTransport("node1");
+    transport2 = new InMemoryTransport("node2");
+
+    transport1.setPeer("node2", transport2);
+    transport2.setPeer("node1", transport1);
+
+    await transport1.connect();
+    await transport2.connect();
+
+    registry1 = new InMemoryRegistry();
+    registry2 = new InMemoryRegistry();
+
+    const cluster1 = new MockCluster("node1");
+    const cluster2 = new MockCluster("node2");
+
+    system1 = new ActorSystem(cluster1, transport1, registry1);
+    system2 = new ActorSystem(cluster2, transport2, registry2);
+
+    system1.registerActorClasses([MigratableActor, SlowStateActor, SlowProcessingActor]);
+    system2.registerActorClasses([MigratableActor, SlowStateActor, SlowProcessingActor]);
+
+    await system1.start();
+    await system2.start();
+  });
+
+  afterEach(async () => {
+    await system1.shutdown();
+    await system2.shutdown();
+    await transport1.disconnect();
+    await transport2.disconnect();
+  });
+
+  it("should reject pending call messages with MigrationInProgressError", async () => {
+    const ref = system1.spawn(SlowProcessingActor, { name: "pending-calls", args: [42, 100] });
+    await new Promise((r) => setTimeout(r, 10));
+
+    const firstCallPromise = ref.call({ type: "get" }, 5000);
+
+    let rejectionError: Error | null = null;
+    const secondCallRaw = ref.call({ type: "get" }, 5000);
+    secondCallRaw.catch((err) => {
+      rejectionError = err;
+    });
+
+    await new Promise((r) => setTimeout(r, 5));
+
+    const migratePromise = system1.migrate("pending-calls", "node2", 5000);
+
+    const firstResult = await firstCallPromise;
+    expect(firstResult).toBe(42);
+
+    await expect(secondCallRaw).rejects.toThrow(MigrationInProgressError);
+    expect(rejectionError).toBeInstanceOf(MigrationInProgressError);
+
+    const result = await migratePromise;
+    expect(result.success).toBe(true);
+  });
+
+  it("should fail migration when getState() times out", async () => {
+    const ref = system1.spawn(SlowStateActor, { name: "slow-state", args: [42, 500] });
+    await new Promise((r) => setTimeout(r, 10));
+
+    const value = await ref.call({ type: "get" });
+    expect(value).toBe(42);
+
+    const result = await system1.migrate("slow-state", "node2", 100);
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("serialize state");
+  });
+
+  it("should resume mailbox and restore messages on getState() timeout", async () => {
+    const ref = system1.spawn(SlowStateActor, { name: "slow-restore", args: [10, 500] });
+    await new Promise((r) => setTimeout(r, 10));
+
+    const result = await system1.migrate("slow-restore", "node2", 100);
+    expect(result.success).toBe(false);
+
+    await new Promise((r) => setTimeout(r, 10));
+
+    const value = await ref.call({ type: "get" });
+    expect(value).toBe(10);
   });
 });

@@ -27,6 +27,8 @@ import {
   ActorNotMigratableError,
   ActorHasChildrenError,
   MigrationFailedError,
+  MigrationInProgressError,
+  StateSerializationTimeoutError,
   MigrationResult,
 } from "./migration";
 import { v4 as uuidv4 } from "uuid";
@@ -415,6 +417,18 @@ export class ActorSystem implements HealthCheckable {
 
     this.pauseMailbox(location.actorId);
 
+    const rejectedCallCount = this._rejectPendingCallsForMigration(
+      location.actorId,
+      actorName,
+      targetNodeId,
+    );
+    if (rejectedCallCount > 0) {
+      this.log.debug("Rejected pending calls before migration", {
+        actorName,
+        rejectedCallCount,
+      });
+    }
+
     let prepareResponse: MigratePrepareResponse;
     try {
       prepareResponse = await this.transport.request(
@@ -446,7 +460,31 @@ export class ActorSystem implements HealthCheckable {
     const reservationId = prepareResponse.reservationId!;
 
     const pendingMessages = await this.drainMailbox(location.actorId, timeout);
-    const state = await Promise.resolve(actor.getState());
+
+    let state: unknown;
+    try {
+      state = await this._getStateWithTimeout(actor, actorName, timeout);
+    } catch (err) {
+      await this.transport
+        .request(
+          targetNodeId,
+          {
+            type: "migrate:rollback",
+            reservationId,
+            actorName,
+          } as MigrateRollbackRequest,
+          5000,
+        )
+        .catch(() => {});
+
+      this.injectMessages(location.actorId, pendingMessages);
+      this.resumeMailbox(location.actorId);
+
+      return {
+        success: false,
+        error: `Failed to serialize state: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
 
     let executeResponse: MigrateExecuteResponse;
     try {
@@ -4107,6 +4145,52 @@ export class ActorSystem implements HealthCheckable {
   getPendingMessages(actorId: string): StashedMessage[] {
     const mailbox = this.mailboxes.get(actorId);
     return mailbox ? [...mailbox] : [];
+  }
+
+  private async _getStateWithTimeout(
+    actor: Actor & { getState(): unknown },
+    actorName: string,
+    timeoutMs: number,
+  ): Promise<unknown> {
+    const statePromise = Promise.resolve(actor.getState());
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      setTimeout(
+        () => reject(new StateSerializationTimeoutError(actorName, timeoutMs)),
+        timeoutMs,
+      );
+    });
+
+    return Promise.race([statePromise, timeoutPromise]);
+  }
+
+  private _rejectPendingCallsForMigration(
+    actorId: string,
+    actorName: string,
+    targetNodeId: string,
+  ): number {
+    const mailbox = this.mailboxes.get(actorId);
+    if (!mailbox) {
+      return 0;
+    }
+
+    let rejectedCount = 0;
+    const remainingMessages: StashedMessage[] = [];
+
+    for (const msg of mailbox) {
+      if (msg.type === "call" && msg.reject) {
+        const rejectFn = msg.reject;
+        const error = new MigrationInProgressError(actorName, targetNodeId);
+        queueMicrotask(() => rejectFn(error));
+        rejectedCount++;
+      } else {
+        remainingMessages.push(msg);
+      }
+    }
+
+    mailbox.length = 0;
+    mailbox.push(...remainingMessages);
+
+    return rejectedCount;
   }
 
   private async _handleMigratePrepare(
