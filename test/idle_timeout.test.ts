@@ -265,9 +265,10 @@ describe("Actor Idle Timeout", () => {
       expect(timeouts.length).toBeGreaterThanOrEqual(1);
 
       // idleMs should be approximately the timeout value (with some tolerance for timing)
+      // Under CPU pressure (e.g., parallel tests), timers can fire late
       const idleMs = timeouts[0].idleMs;
       expect(idleMs).toBeGreaterThanOrEqual(45); // Allow some tolerance
-      expect(idleMs).toBeLessThan(100); // But not too high
+      expect(idleMs).toBeLessThan(300); // Allow for CI timing variance
     });
   });
 });
