@@ -9,6 +9,22 @@ import {
   TimeoutMessage,
 } from "../src";
 
+/**
+ * Helper to poll for a condition with timeout.
+ * More reliable than fixed waits under CPU load.
+ */
+async function waitFor(
+  condition: () => boolean | Promise<boolean>,
+  { timeout = 500, interval = 10 } = {},
+): Promise<void> {
+  const start = Date.now();
+  while (Date.now() - start < timeout) {
+    if (await condition()) return;
+    await new Promise((resolve) => setTimeout(resolve, interval));
+  }
+  throw new Error(`waitFor timed out after ${timeout}ms`);
+}
+
 class MockCluster implements Cluster {
   constructor(public readonly nodeId: string) {}
   getMembers(): string[] {
@@ -132,11 +148,8 @@ describe("Actor Idle Timeout", () => {
       const ref = system.spawn(TimeoutTrackingActor);
       ref.cast({ type: "setIdleTimeout", timeoutMs: 50 });
 
-      // Wait for cast to be processed before timing starts
-      await new Promise((resolve) => setTimeout(resolve, 10));
-
-      // Wait for the timeout to fire
-      await new Promise((resolve) => setTimeout(resolve, 100));
+      // Wait long enough for 50ms timeout to fire under CPU load
+      await new Promise((resolve) => setTimeout(resolve, 200));
 
       const timeouts = await ref.call({ type: "getTimeouts" });
       expect(timeouts.length).toBeGreaterThanOrEqual(1);
@@ -201,8 +214,8 @@ describe("Actor Idle Timeout", () => {
     it("should support setting idle timeout in init()", async () => {
       const ref = system.spawn(InitTimeoutActor);
 
-      // Wait for timeout to fire
-      await new Promise((resolve) => setTimeout(resolve, 100));
+      // Wait long enough for 50ms timeout to fire under CPU load (calls reset idle timer)
+      await new Promise((resolve) => setTimeout(resolve, 200));
 
       const timeouts = await ref.call({ type: "getTimeouts" });
       expect(timeouts.length).toBeGreaterThanOrEqual(1);
@@ -242,12 +255,10 @@ describe("Actor Idle Timeout", () => {
     it("should allow actor to stop itself on timeout", async () => {
       const ref = system.spawn(SelfStoppingActor);
 
-      // Wait for timeout and self-stop
-      await new Promise((resolve) => setTimeout(resolve, 100));
+      // Poll instead of fixed wait - more reliable under CPU load
+      await waitFor(() => !system.getLocalActorIds().includes(ref.id.id));
 
-      // Actor should have stopped itself - calling it should fail
-      const localIds = system.getLocalActorIds();
-      expect(localIds).not.toContain(ref.id.id);
+      expect(system.getLocalActorIds()).not.toContain(ref.id.id);
     });
   });
 
