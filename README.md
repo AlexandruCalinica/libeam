@@ -279,6 +279,58 @@ class MyActor extends Actor {
 }
 ```
 
+### handleContinue
+
+Called when `init()` returns `{ continue: data }` for deferred async initialization.
+
+```typescript
+class DatabaseActor extends Actor {
+  private db!: DatabaseConnection;
+
+  init() {
+    // Return immediately, continue async work
+    return { continue: "connect" };
+  }
+
+  async handleContinue(data: string) {
+    if (data === "connect") {
+      this.db = await connectToDatabase();
+    }
+  }
+}
+```
+
+See `examples/handle_continue.ts` for more examples.
+
+### Idle Timeout
+
+Set a timeout that fires when the actor is idle (no messages received).
+
+```typescript
+class SessionActor extends Actor {
+  init() {
+    // Timeout after 30 seconds of inactivity
+    this.setIdleTimeout(30000);
+  }
+
+  handleInfo(message: InfoMessage) {
+    if (message.type === "timeout") {
+      console.log(`Session idle for ${message.idleMs}ms, closing...`);
+      this.exit(this.self, "normal");
+    }
+  }
+}
+```
+
+**Methods:**
+
+- `setIdleTimeout(timeoutMs: number): void` - Set idle timeout in milliseconds
+- `getIdleTimeout(): number` - Get current idle timeout
+
+The actor receives a `TimeoutMessage` via `handleInfo()` when the timeout fires.
+
+See `test/idle_timeout.test.ts` for more examples.
+
 ### ActorRef
 
 Location-transparent reference to an actor.
@@ -290,6 +342,39 @@ const result = await actorRef.call(message, timeout?);
 // Fire-and-forget
 actorRef.cast(message);
 ```
+
+### Agent
+
+State management abstraction for simple key-value storage.
+
+```typescript
+// Create an agent
+const counter = Agent.start(system, 0);
+
+// Read state
+const value = await counter.get();
+
+// Update state (waits for completion)
+await counter.update(n => n + 1);
+
+// Fire-and-forget update
+counter.cast(n => n + 1);
+
+// Stop the agent
+await counter.stop();
+```
+
+**Methods:**
+
+- `Agent.start<T>(system, initialState, options?): Agent<T>` - Create an agent
+- `get(timeout?): Promise<T>` - Get current state
+- `update(fn, timeout?): Promise<T>` - Update state, returns new value
+- `getAndUpdate(fn, timeout?): Promise<T>` - Update state, returns old value
+- `cast(fn): void` - Fire-and-forget state update
+- `stop(): Promise<void>` - Stop the agent
+- `getRef(): ActorRef` - Access underlying actor reference
+
+See `test/agent.test.ts` for more examples.
 
 ### ActorSystem
 
