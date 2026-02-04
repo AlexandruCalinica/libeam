@@ -331,6 +331,132 @@ The actor receives a `TimeoutMessage` via `handleInfo()` when the timeout fires.
 
 See `test/idle_timeout.test.ts` for more examples.
 
+### Timers
+
+Schedule delayed and periodic messages to yourself.
+
+```typescript
+class ReminderActor extends Actor {
+  private reminderRef!: TimerRef;
+
+  init() {
+    // One-shot timer: remind after 5 seconds
+    this.reminderRef = this.sendAfter({ type: "remind" }, 5000);
+    
+    // Periodic timer: tick every second
+    this.sendInterval({ type: "tick" }, 1000);
+  }
+
+  handleCast(message: { type: string }) {
+    if (message.type === "remind") {
+      console.log("Time's up!");
+    } else if (message.type === "tick") {
+      console.log("Tick...");
+    }
+  }
+
+  terminate() {
+    // Clean up timers
+    this.cancelTimer(this.reminderRef);
+    this.cancelAllTimers();
+  }
+}
+```
+
+**Methods:**
+
+- `sendAfter(message, delayMs): TimerRef` - Schedule one-shot message
+- `sendInterval(message, intervalMs): TimerRef` - Schedule repeating message
+- `cancelTimer(timerRef): boolean` - Cancel a specific timer
+- `cancelAllTimers(): void` - Cancel all active timers
+
+See `examples/timers.ts` for more examples.
+
+### Watching
+
+Monitor another actor's lifecycle and receive notification when it terminates.
+
+```typescript
+class WorkerSupervisor extends Actor {
+  private workerWatch!: WatchRef;
+
+  init(workerRef: ActorRef) {
+    // Start watching the worker
+    this.workerWatch = this.watch(workerRef);
+  }
+
+  handleInfo(message: InfoMessage) {
+    if (message.type === "down") {
+      const down = message as DownMessage;
+      console.log(`Worker ${down.actorRef.id} terminated: ${down.reason.type}`);
+      
+      // Unwatch when done
+      this.unwatch(down.watchRef);
+    }
+  }
+}
+```
+
+**Methods:**
+
+- `watch(actorRef): WatchRef` - Start watching an actor
+- `unwatch(watchRef): void` - Stop watching
+
+**Behavior:**
+- One-shot notification: You receive exactly one `DownMessage` when the watched actor terminates
+- Auto-cleanup: The watch is automatically removed after the DOWN message is delivered
+- Works across nodes: Can watch actors on remote nodes
+
+See `examples/actor_watching.ts` for more examples.
+
+### Links
+
+Bidirectional crash propagation between actors. If one linked actor crashes, the other crashes too (unless trapExit is enabled).
+
+```typescript
+class ParentActor extends Actor {
+  private childLink!: LinkRef;
+
+  init(childRef: ActorRef) {
+    // Link to child - bidirectional crash propagation
+    this.childLink = this.link(childRef);
+    
+    // Enable trap exit to receive ExitMessage instead of crashing
+    this.setTrapExit(true);
+  }
+
+  handleInfo(message: InfoMessage) {
+    if (message.type === "exit") {
+      const exit = message as ExitMessage;
+      console.log(`Linked actor exited: ${exit.reason.type}`);
+      
+      // Unlink when done
+      this.unlink(exit.linkRef!);
+    }
+  }
+
+  terminateChild() {
+    // Send exit signal to linked actor
+    this.exit(this.childLink.actorRef, "shutdown");
+  }
+}
+```
+
+**Methods:**
+
+- `link(actorRef): LinkRef` - Create bidirectional link
+- `unlink(linkRef): void` - Remove link
+- `setTrapExit(trap: boolean): void` - Enable/disable exit trapping
+- `isTrapExit(): boolean` - Check if exit trapping is enabled
+- `exit(actorRef, reason?): void` - Send exit signal to actor
+
+**Exit Reasons:**
+- `"normal"` - No effect on linked actors
+- `"kill"` - Always terminates, ignores trapExit
+- Custom string - Delivered to linked actors with trapExit enabled
+
+See `examples/actor_links.ts` for more examples.
+
 ### ActorRef
 
 Location-transparent reference to an actor.
