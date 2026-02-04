@@ -457,6 +457,93 @@ class ParentActor extends Actor {
 
 See `examples/actor_links.ts` for more examples.
 
+### Message Stashing
+
+Defer message processing until the actor is ready. Useful for state-dependent message handling.
+
+```typescript
+class StatefulActor extends Actor {
+  private ready = false;
+  private pendingMessages: any[] = [];
+
+  init() {
+    // Actor starts in "not ready" state
+    this.ready = false;
+  }
+
+  async handleCall(message: any) {
+    if (!this.ready) {
+      // Stash message for later processing
+      this.stash();
+      return "stashed";
+    }
+    // Process message normally
+    return this.processMessage(message);
+  }
+
+  setReady() {
+    this.ready = true;
+    // Replay all stashed messages
+    this.unstashAll();
+  }
+
+  private processMessage(message: any) {
+    return `Processed: ${message}`;
+  }
+}
+```
+
+**Methods:**
+
+- `stash(): void` - Save current message to stash
+- `unstash(): void` - Replay one stashed message (FIFO order)
+- `unstashAll(): void` - Replay all stashed messages
+- `clearStash(): void` - Discard all stashed messages
+
+See `test/message_stashing.test.ts` for more examples.
+
+### InfoMessage Types
+
+System messages delivered via `handleInfo()`. Use type guards to distinguish between message variants.
+
+```typescript
+handleInfo(message: InfoMessage) {
+  switch (message.type) {
+    case "down":
+      const down = message as DownMessage;
+      console.log(`Actor ${down.actorRef.id} terminated: ${down.reason.type}`);
+      break;
+    case "exit":
+      const exit = message as ExitMessage;
+      console.log(`Linked actor exited: ${exit.reason.type}`);
+      break;
+    case "timeout":
+      const timeout = message as TimeoutMessage;
+      console.log(`Idle for ${timeout.idleMs}ms`);
+      break;
+    case "moved":
+      const moved = message as MovedMessage;
+      console.log(`Actor moved to ${moved.newNodeId}`);
+      break;
+  }
+}
+```
+
+| Message | Type | Fields | Description |
+|---------|------|--------|-------------|
+| `DownMessage` | `"down"` | `watchRef`, `actorRef`, `reason` | Watched actor terminated |
+| `ExitMessage` | `"exit"` | `linkRef?`, `actorRef`, `reason` | Linked actor exited (trapExit only) |
+| `TimeoutMessage` | `"timeout"` | `idleMs` | Idle timeout fired |
+| `MovedMessage` | `"moved"` | `watchRef?`, `linkRef?`, `actorRef`, `oldNodeId`, `newNodeId`, `newActorId` | Actor migrated to another node |
+
+**TerminationReason:**
+```typescript
+type TerminationReason = 
+  | { type: "normal" }
+  | { type: "error"; error: any }
+  | { type: "killed" };
+```
+
 ### ActorRef
 
 Location-transparent reference to an actor.
