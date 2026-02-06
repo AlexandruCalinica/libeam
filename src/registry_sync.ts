@@ -2,7 +2,7 @@
 
 import { EventEmitter } from "events";
 import { Transport } from "./transport";
-import { DistributedCluster } from "./distributed_cluster";
+import { Cluster } from "./cluster";
 import { VectorClock } from "./vector_clock";
 import { Registry, ActorLocation } from "./registry";
 
@@ -39,14 +39,16 @@ export class RegistrySync extends EventEmitter implements Registry {
   constructor(
     private nodeId: string,
     private transport: Transport,
-    private membership: DistributedCluster,
+    private membership: Cluster,
   ) {
     super();
     this.localClock = new VectorClock();
 
     // Listen to membership changes to update transport peers and cleanup
-    membership.on("member_join", this.handlePeerJoin.bind(this));
-    membership.on("member_leave", this.handlePeerLeave.bind(this));
+    if (membership.on) {
+      membership.on("member_join", this.handlePeerJoin.bind(this));
+      membership.on("member_leave", this.handlePeerLeave.bind(this));
+    }
   }
 
   async connect(): Promise<void> {
@@ -240,14 +242,34 @@ export class RegistrySync extends EventEmitter implements Registry {
     }
   }
 
-  private syncPeers(): void {
-    const peers = this.membership.getLivePeers();
-    const peerList: Array<[string, string]> = peers.map((p) => [
-      p.id,
-      p.address,
-    ]);
-    this.transport.updatePeers(peerList);
-  }
+   private syncPeers(): void {
+     const peerList: Array<[string, string]> = [];
+     
+     if (this.membership.getLivePeers) {
+       const peers = this.membership.getLivePeers();
+       for (const peer of peers) {
+         if (peer.id !== this.nodeId) {
+           // ClusterPeer may have address property (from DistributedCluster)
+           const address = (peer as any).address;
+           if (address) {
+             peerList.push([peer.id, address]);
+           }
+         }
+       }
+     } else {
+       const memberIds = this.membership.getMembers();
+       for (const memberId of memberIds) {
+         if (memberId !== this.nodeId) {
+           // Without getLivePeers, we can't get addresses, so skip
+           // This is a limitation of the base Cluster interface
+         }
+       }
+     }
+     
+     if (peerList.length > 0) {
+       this.transport.updatePeers(peerList);
+     }
+   }
 
   private serializeRegistration(reg: ActorRegistration): any {
     return {
