@@ -19,6 +19,6 @@ export * from "./distributed_cluster";
 export * from "./zeromq_transport";
 export * from "./vector_clock";
 export * from "./registry_sync";
-export * from "./gossip_registry";
+export * from "./distributed_registry";
 export * from "./heartbeat";
 export * from "./migration";

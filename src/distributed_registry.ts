@@ -4,7 +4,7 @@ import { v4 as uuidv4 } from "uuid";
 
 const DEFAULT_RESERVATION_TTL_MS = 30000;
 
-export class GossipRegistry implements Registry {
+export class DistributedRegistry implements Registry {
   private readonly reservations = new Map<string, NameReservation>();
 
   constructor(

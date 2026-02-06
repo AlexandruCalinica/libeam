@@ -19,7 +19,7 @@ import {
   ActorSystem,
   ZeroMQTransport,
   RegistrySync,
-  GossipRegistry,
+  DistributedRegistry,
   DistributedCluster,
   GossipProtocol,
   GossipUDP,
@@ -192,11 +192,11 @@ async function runNode1() {
   await cluster.start();
   console.log(`[${config.nodeId}] Cluster started, gossip protocol running`);
 
-  // Create registry for actor discovery
-  const registryGossip = new RegistrySync(config.nodeId, transport, cluster);
-  await registryGossip.connect();
-  const registry = new GossipRegistry(config.nodeId, registryGossip);
-  console.log(`[${config.nodeId}] Registry connected`);
+    // Create registry for actor discovery
+    const registryGossip = new RegistrySync(config.nodeId, transport, cluster);
+    await registryGossip.connect();
+    const registry = new DistributedRegistry(config.nodeId, registryGossip);
+    console.log(`[${config.nodeId}] Registry connected`);
 
   // Create actor system
   const system = new ActorSystem(cluster, transport, registry);
@@ -277,7 +277,7 @@ async function runNode2() {
    // Create registry for actor discovery
    const registryGossip = new RegistrySync(config.nodeId, transport, cluster);
    await registryGossip.connect();
-   const registry = new GossipRegistry(config.nodeId, registryGossip);
+   const registry = new DistributedRegistry(config.nodeId, registryGossip);
    console.log(`[${config.nodeId}] Registry connected`);
 
    // Create actor system

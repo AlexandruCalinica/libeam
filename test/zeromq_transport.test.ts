@@ -8,7 +8,7 @@ import {
   ActorId,
   Cluster,
   RegistrySync,
-  GossipRegistry,
+  DistributedRegistry,
   DistributedCluster,
 } from "../src";
 import * as net from "net";
@@ -209,8 +209,8 @@ describe("ZeroMQ ActorSystem Integration", () => {
     await registryGossip1.connect();
     await registryGossip2.connect();
 
-    const registry1 = new GossipRegistry("node1", registryGossip1);
-    const registry2 = new GossipRegistry("node2", registryGossip2);
+    const registry1 = new DistributedRegistry("node1", registryGossip1);
+    const registry2 = new DistributedRegistry("node2", registryGossip2);
 
     // Create actor systems
     system1 = new ActorSystem(cluster1, transport1, registry1);
