@@ -7,20 +7,13 @@
 import {
   Actor,
   ActorSystem,
-  Cluster,
+  LocalCluster,
   InMemoryTransport,
   LocalRegistry,
   InitContinue,
 } from "../src";
 
-// --- Mock Cluster ---
 
-class MockCluster implements Cluster {
-  constructor(public readonly nodeId: string) {}
-  getMembers(): string[] {
-    return [this.nodeId];
-  }
-}
 
 // --- Simulated External Services ---
 
@@ -263,7 +256,7 @@ async function main() {
   console.log("blocking spawn(). init() returns quickly, then handleContinue()");
   console.log("runs asynchronously in the background.\n");
 
-  const cluster = new MockCluster("node1");
+  const cluster = new LocalCluster("node1");
   const transport = new InMemoryTransport(cluster.nodeId);
   const registry = new LocalRegistry();
   const system = new ActorSystem(cluster, transport, registry);

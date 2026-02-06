@@ -18,25 +18,21 @@ import {
   Actor,
   ActorRef,
   ActorSystem,
-  Cluster,
+  LocalCluster,
   ClusterPeer,
   InMemoryTransport,
   LocalRegistry,
   HeartbeatConfig,
 } from "../src";
 
-// --- Mock Cluster with Event Support ---
+// --- Helper to add peer management to LocalCluster ---
 
-class MockCluster extends EventEmitter implements Cluster {
+class ClusterWithPeers extends LocalCluster {
   private peers: ClusterPeer[] = [];
 
-  constructor(public readonly nodeId: string) {
-    super();
+  constructor(nodeId: string) {
+    super(nodeId);
     this.peers = [{ id: nodeId }];
-  }
-
-  getMembers(): string[] {
-    return this.peers.map((p) => p.id);
   }
 
   getLivePeers(): ClusterPeer[] {
@@ -98,9 +94,9 @@ async function main() {
   transport3.setPeer("node2", transport2);
 
   // Create clusters with event support
-  const cluster1 = new MockCluster("node1");
-  const cluster2 = new MockCluster("node2");
-  const cluster3 = new MockCluster("node3");
+  const cluster1 = new ClusterWithPeers("node1");
+  const cluster2 = new ClusterWithPeers("node2");
+  const cluster3 = new ClusterWithPeers("node3");
 
   // Add peer awareness
   cluster1.addPeer("node2");

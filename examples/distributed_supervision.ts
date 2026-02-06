@@ -18,20 +18,13 @@ import {
   Actor,
   ActorRef,
   ActorSystem,
-  Cluster,
+  LocalCluster,
   InMemoryTransport,
   LocalRegistry,
   ChildSupervisionOptions,
 } from "../src";
 
-// --- Mock Cluster for Testing ---
 
-class MockCluster implements Cluster {
-  constructor(public readonly nodeId: string) {}
-  getMembers(): string[] {
-    return [this.nodeId];
-  }
-}
 
 // --- Actor Definitions ---
 
@@ -128,8 +121,8 @@ async function main() {
   console.log("=== Distributed Actor Supervision Example ===\n");
 
   // Create two nodes with connected transports
-  const cluster1 = new MockCluster("node1");
-  const cluster2 = new MockCluster("node2");
+  const cluster1 = new LocalCluster("node1");
+  const cluster2 = new LocalCluster("node2");
 
   const transport1 = new InMemoryTransport("node1");
   const transport2 = new InMemoryTransport("node2");

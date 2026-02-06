@@ -4,7 +4,7 @@ import {
   Actor,
   ActorRef,
   ActorSystem,
-  Cluster,
+  LocalCluster,
   LocalRegistry,
   InMemoryTransport,
 } from "../src";
@@ -72,12 +72,13 @@ class UserActor extends Actor {
   }
 }
 
-// --- Mock Cluster for example (implements Cluster interface) ---
+// --- Helper to add member management to LocalCluster ---
 
-class MockCluster implements Cluster {
+class ClusterWithMembers extends LocalCluster {
   private members: string[] = [];
 
-  constructor(public readonly nodeId: string) {
+  constructor(nodeId: string) {
+    super(nodeId);
     this.members = [nodeId];
   }
 
@@ -87,7 +88,7 @@ class MockCluster implements Cluster {
     }
   }
 
-  getMembers(): string[] {
+  override getMembers(): string[] {
     return [...this.members];
   }
 }
@@ -112,12 +113,12 @@ async function main() {
   registry2.registry = registry1.registry;
 
   // --- Node 1 Setup ---
-  const cluster1 = new MockCluster("node1");
+  const cluster1 = new ClusterWithMembers("node1");
   cluster1.addMember("node2");
   const node1 = new ActorSystem(cluster1, transport1, registry1);
 
   // --- Node 2 Setup ---
-  const cluster2 = new MockCluster("node2");
+  const cluster2 = new ClusterWithMembers("node2");
   cluster2.addMember("node1");
   const node2 = new ActorSystem(cluster2, transport2, registry2);
 

@@ -8,21 +8,14 @@ import {
   Actor,
   ActorSystem,
   ActorRef,
-  Cluster,
+  LocalCluster,
   InMemoryTransport,
   LocalRegistry,
   InfoMessage,
   TimeoutMessage,
 } from "../src";
 
-// --- Mock Cluster ---
 
-class MockCluster implements Cluster {
-  constructor(public readonly nodeId: string) {}
-  getMembers(): string[] {
-    return [this.nodeId];
-  }
-}
 
 // --- Actor Definitions ---
 
@@ -274,7 +267,7 @@ async function main() {
   console.log("Idle timeout sends a TimeoutMessage via handleInfo()");
   console.log("when an actor hasn't received any messages for a period.\n");
 
-  const cluster = new MockCluster("node1");
+  const cluster = new LocalCluster("node1");
   const transport = new InMemoryTransport(cluster.nodeId);
   const registry = new LocalRegistry();
   const system = new ActorSystem(cluster, transport, registry);

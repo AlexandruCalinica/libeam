@@ -8,7 +8,7 @@ import {
   Actor,
   ActorSystem,
   ActorRef,
-  Cluster,
+  LocalCluster,
   InMemoryTransport,
   LocalRegistry,
   LinkRef,
@@ -16,14 +16,7 @@ import {
   ExitMessage,
 } from "../src";
 
-// --- Mock Cluster ---
 
-class MockCluster implements Cluster {
-  constructor(public readonly nodeId: string) {}
-  getMembers(): string[] {
-    return [this.nodeId];
-  }
-}
 
 // --- Actor Definitions ---
 
@@ -218,7 +211,7 @@ async function main() {
   console.log("When a linked actor crashes, the other crashes too");
   console.log("(unless trapExit is enabled).\n");
 
-  const cluster = new MockCluster("node1");
+  const cluster = new LocalCluster("node1");
   const transport = new InMemoryTransport(cluster.nodeId);
   const registry = new LocalRegistry();
   const system = new ActorSystem(cluster, transport, registry, {

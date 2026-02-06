@@ -16,7 +16,7 @@
 import {
   Actor,
   ActorSystem,
-  Cluster,
+  LocalCluster,
   InMemoryTransport,
   LocalRegistry,
   Migratable,
@@ -24,14 +24,7 @@ import {
   MovedMessage,
 } from "../src";
 
-// --- Mock Cluster for Testing ---
 
-class MockCluster implements Cluster {
-  constructor(public readonly nodeId: string) {}
-  getMembers(): string[] {
-    return [this.nodeId];
-  }
-}
 
 // --- Actor Definitions ---
 
@@ -162,8 +155,8 @@ async function main() {
   const registry1 = new LocalRegistry();
   const registry2 = new LocalRegistry();
 
-  const cluster1 = new MockCluster("node1");
-  const cluster2 = new MockCluster("node2");
+  const cluster1 = new LocalCluster("node1");
+  const cluster2 = new LocalCluster("node2");
 
   const system1 = new ActorSystem(cluster1, transport1, registry1);
   const system2 = new ActorSystem(cluster2, transport2, registry2);

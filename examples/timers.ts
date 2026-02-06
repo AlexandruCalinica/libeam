@@ -8,20 +8,13 @@ import {
   Actor,
   ActorSystem,
   ActorRef,
-  Cluster,
+  LocalCluster,
   InMemoryTransport,
   LocalRegistry,
   TimerRef,
 } from "../src";
 
-// --- Mock Cluster ---
 
-class MockCluster implements Cluster {
-  constructor(public readonly nodeId: string) {}
-  getMembers(): string[] {
-    return [this.nodeId];
-  }
-}
 
 // --- Actor Definitions ---
 
@@ -211,7 +204,7 @@ class TimeoutActor extends Actor {
 async function main() {
   console.log("=== Actor Timers Example ===\n");
 
-  const cluster = new MockCluster("node1");
+  const cluster = new LocalCluster("node1");
   const transport = new InMemoryTransport(cluster.nodeId);
   const registry = new LocalRegistry();
   const system = new ActorSystem(cluster, transport, registry);

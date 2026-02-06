@@ -14,7 +14,7 @@
 import {
   Actor,
   ActorSystem,
-  Cluster,
+  LocalCluster,
   LocalRegistry,
   InMemoryTransport,
 } from "../src";
@@ -203,14 +203,7 @@ class RateLimitedWorker extends Actor {
   }
 }
 
-// --- Mock Cluster ---
 
-class MockCluster implements Cluster {
-  constructor(public readonly nodeId: string) {}
-  getMembers(): string[] {
-    return [this.nodeId];
-  }
-}
 
 // --- Helper ---
 
@@ -227,7 +220,7 @@ async function main() {
   const transport = new InMemoryTransport("node1");
   await transport.connect();
   const registry = new LocalRegistry();
-  const cluster = new MockCluster("node1");
+  const cluster = new LocalCluster("node1");
   const system = new ActorSystem(cluster, transport, registry);
   system.registerActorClasses([DatabaseActor, OrderProcessor, RateLimitedWorker]);
   await system.start();
