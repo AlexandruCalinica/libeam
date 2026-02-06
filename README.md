@@ -120,20 +120,12 @@ For testing or single-process applications:
 import {
   ActorSystem,
   InMemoryTransport,
+  LocalCluster,
   LocalRegistry,
-  Cluster,
 } from "libeam";
 
-// Simple cluster implementation for single node
-class SingleNodeCluster implements Cluster {
-  constructor(public readonly nodeId: string) {}
-  getMembers(): string[] {
-    return [this.nodeId];
-  }
-}
-
 async function main() {
-  const cluster = new SingleNodeCluster("node1");
+  const cluster = new LocalCluster("node1");
   const transport = new InMemoryTransport("node1");
   const registry = new LocalRegistry();
 
