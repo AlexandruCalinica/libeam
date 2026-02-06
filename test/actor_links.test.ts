@@ -7,7 +7,7 @@ import {
   ActorRef,
   Cluster,
   InMemoryTransport,
-  InMemoryRegistry,
+  LocalRegistry,
   LinkRef,
   InfoMessage,
   ExitMessage,
@@ -145,7 +145,7 @@ describe("Actor Links", () => {
   beforeEach(async () => {
     const cluster = new MockCluster("test-node");
     transport = new InMemoryTransport(cluster.nodeId);
-    const registry = new InMemoryRegistry();
+    const registry = new LocalRegistry();
     // Use Stop strategy to make crash propagation observable
     system = new ActorSystem(cluster, transport, registry, {
       strategy: "Stop",
@@ -320,7 +320,7 @@ describe("Actor Links", () => {
       // Create a new system for this test
       const cluster = new MockCluster("test-bidir");
       const biTransport = new InMemoryTransport(cluster.nodeId);
-      const biRegistry = new InMemoryRegistry();
+      const biRegistry = new LocalRegistry();
       const biSystem = new ActorSystem(cluster, biTransport, biRegistry, {
         strategy: "Stop",
         maxRestarts: 0,

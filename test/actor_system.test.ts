@@ -5,7 +5,7 @@ import {
   ActorSystem,
   ActorRef,
   InMemoryTransport,
-  InMemoryRegistry,
+  LocalRegistry,
   Cluster,
 } from "../src";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
@@ -151,12 +151,12 @@ class GrandchildActor extends Actor {
 describe("ActorSystem", () => {
   let system: ActorSystem;
   let transport: InMemoryTransport;
-  let registry: InMemoryRegistry;
+  let registry: LocalRegistry;
   let cluster: MockCluster;
 
   beforeEach(() => {
     transport = new InMemoryTransport("test-system");
-    registry = new InMemoryRegistry();
+    registry = new LocalRegistry();
     cluster = new MockCluster("test-system");
     system = new ActorSystem(cluster, transport, registry);
     system.start();

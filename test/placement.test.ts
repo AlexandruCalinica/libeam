@@ -3,7 +3,7 @@
 import {
   Actor,
   ActorSystem,
-  InMemoryRegistry,
+  LocalRegistry,
   InMemoryTransport,
   Cluster,
 } from "../src";
@@ -49,8 +49,8 @@ describe("PlacementEngine", () => {
     await transport1.connect();
     await transport2.connect();
 
-    const registry1 = new InMemoryRegistry();
-    const registry2 = new InMemoryRegistry();
+    const registry1 = new LocalRegistry();
+    const registry2 = new LocalRegistry();
     // @ts-ignore
     registry2.registry = registry1.registry;
 

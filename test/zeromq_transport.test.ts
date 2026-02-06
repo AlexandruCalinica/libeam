@@ -7,9 +7,9 @@ import {
   ActorSystem,
   ActorId,
   Cluster,
-  RegistryGossip,
+  RegistrySync,
   GossipRegistry,
-  CustomGossipCluster,
+  DistributedCluster,
 } from "../src";
 import * as net from "net";
 
@@ -164,8 +164,8 @@ describe("ZeroMQ ActorSystem Integration", () => {
   let transport2: ZeroMQTransport;
   let system1: ActorSystem;
   let system2: ActorSystem;
-  let registryGossip1: RegistryGossip;
-  let registryGossip2: RegistryGossip;
+  let registryGossip1: RegistrySync;
+  let registryGossip2: RegistrySync;
 
   beforeEach(async () => {
     // Allocate ports
@@ -203,8 +203,8 @@ describe("ZeroMQ ActorSystem Integration", () => {
     cluster2.addMember("node1");
 
     // Create registry gossip
-    registryGossip1 = new RegistryGossip("node1", transport1, cluster1);
-    registryGossip2 = new RegistryGossip("node2", transport2, cluster2);
+    registryGossip1 = new RegistrySync("node1", transport1, cluster1);
+    registryGossip2 = new RegistrySync("node2", transport2, cluster2);
 
     await registryGossip1.connect();
     await registryGossip2.connect();

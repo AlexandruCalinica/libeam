@@ -3,7 +3,7 @@ import {
   ActorSystem,
   Cluster,
   InMemoryTransport,
-  InMemoryRegistry,
+  LocalRegistry,
   Agent,
 } from "../src";
 
@@ -20,7 +20,7 @@ describe("Agent", () => {
   beforeEach(async () => {
     const cluster = new MockCluster("test-node");
     const transport = new InMemoryTransport(cluster.nodeId);
-    const registry = new InMemoryRegistry();
+    const registry = new LocalRegistry();
     system = new ActorSystem(cluster, transport, registry);
     await system.start();
   });

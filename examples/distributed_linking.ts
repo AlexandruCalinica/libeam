@@ -19,7 +19,7 @@ import {
   ActorSystem,
   Cluster,
   InMemoryTransport,
-  InMemoryRegistry,
+  LocalRegistry,
   ExitMessage,
   InfoMessage,
 } from "../src";
@@ -206,8 +206,8 @@ async function main() {
   transport1.setPeer("node2", transport2);
   transport2.setPeer("node1", transport1);
 
-  const registry1 = new InMemoryRegistry();
-  const registry2 = new InMemoryRegistry();
+  const registry1 = new LocalRegistry();
+  const registry2 = new LocalRegistry();
 
   const node1 = new ActorSystem(cluster1, transport1, registry1, {
     strategy: "Stop", // Stop actors on crash for this demo

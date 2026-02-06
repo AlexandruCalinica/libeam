@@ -5,7 +5,7 @@ import {
   ActorRef,
   Cluster,
   InMemoryTransport,
-  InMemoryRegistry,
+  LocalRegistry,
   InfoMessage,
   ExitMessage,
 } from "../src";
@@ -100,7 +100,7 @@ describe("Exit Signals", () => {
   beforeEach(async () => {
     const cluster = new MockCluster("test-node");
     const transport = new InMemoryTransport(cluster.nodeId);
-    const registry = new InMemoryRegistry();
+    const registry = new LocalRegistry();
     system = new ActorSystem(cluster, transport, registry, {
       strategy: "Stop",
       maxRestarts: 0,

@@ -5,7 +5,7 @@ import {
   ActorSystem,
   Cluster,
   InMemoryTransport,
-  InMemoryRegistry,
+  LocalRegistry,
   WatchRef,
   DownMessage,
   InfoMessage,
@@ -78,8 +78,8 @@ describe("Distributed Actor Watching", () => {
   let node2: ActorSystem;
   let transport1: InMemoryTransport;
   let transport2: InMemoryTransport;
-  let registry1: InMemoryRegistry;
-  let registry2: InMemoryRegistry;
+  let registry1: LocalRegistry;
+  let registry2: LocalRegistry;
 
   beforeEach(async () => {
     // Create two nodes with connected transports
@@ -93,8 +93,8 @@ describe("Distributed Actor Watching", () => {
     transport1.setPeer("node2", transport2);
     transport2.setPeer("node1", transport1);
 
-    registry1 = new InMemoryRegistry();
-    registry2 = new InMemoryRegistry();
+    registry1 = new LocalRegistry();
+    registry2 = new LocalRegistry();
 
     node1 = new ActorSystem(cluster1, transport1, registry1);
     node2 = new ActorSystem(cluster2, transport2, registry2);
@@ -140,7 +140,7 @@ describe("Distributed Actor Watching", () => {
     transport2 = new InMemoryTransport("node2");
     transport1.setPeer("node2", transport2);
     transport2.setPeer("node1", transport1);
-    registry2 = new InMemoryRegistry();
+    registry2 = new LocalRegistry();
     node2 = new ActorSystem(cluster2, transport2, registry2, {
       strategy: "Stop",
       maxRestarts: 0,

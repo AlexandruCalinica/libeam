@@ -4,7 +4,7 @@ import {
   Actor,
   ActorSystem,
   ActorId,
-  InMemoryRegistry,
+  LocalRegistry,
   InMemoryTransport,
   Cluster,
 } from "../src";
@@ -56,8 +56,8 @@ describe("RPC", () => {
     await transport1.connect();
     await transport2.connect();
 
-    const registry1 = new InMemoryRegistry();
-    const registry2 = new InMemoryRegistry();
+    const registry1 = new LocalRegistry();
+    const registry2 = new LocalRegistry();
 
     // Simulate a shared registry by making them reference the same map
     // @ts-ignore

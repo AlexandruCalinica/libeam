@@ -1,8 +1,8 @@
-// src/registry_gossip.ts
+// src/registry_sync.ts
 
 import { EventEmitter } from "events";
 import { Transport } from "./transport";
-import { CustomGossipCluster } from "./custom_gossip_cluster";
+import { DistributedCluster } from "./distributed_cluster";
 import { VectorClock } from "./vector_clock";
 import { Registry, ActorLocation } from "./registry";
 
@@ -32,14 +32,14 @@ export interface RegistryUpdate {
  * - 'actor_unregistered': Emitted when an actor is unregistered
  * - 'actor_updated': Emitted when actor registration is updated (moved nodes, etc.)
  */
-export class RegistryGossip extends EventEmitter implements Registry {
+export class RegistrySync extends EventEmitter implements Registry {
   private localClock: VectorClock;
   private registrations = new Map<string, ActorRegistration>();
 
   constructor(
     private nodeId: string,
     private transport: Transport,
-    private membership: CustomGossipCluster,
+    private membership: DistributedCluster,
   ) {
     super();
     this.localClock = new VectorClock();

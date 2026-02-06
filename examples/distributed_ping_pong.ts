@@ -18,9 +18,9 @@ import {
   ActorRef,
   ActorSystem,
   ZeroMQTransport,
-  RegistryGossip,
+  RegistrySync,
   GossipRegistry,
-  CustomGossipCluster,
+  DistributedCluster,
   GossipProtocol,
   GossipUDP,
 } from "../src";
@@ -188,12 +188,12 @@ async function runNode1() {
   );
 
   // Create cluster wrapper and start gossip protocol
-  const cluster = new CustomGossipCluster(gossipProtocol);
+  const cluster = new DistributedCluster(gossipProtocol);
   await cluster.start();
   console.log(`[${config.nodeId}] Cluster started, gossip protocol running`);
 
   // Create registry for actor discovery
-  const registryGossip = new RegistryGossip(config.nodeId, transport, cluster);
+  const registryGossip = new RegistrySync(config.nodeId, transport, cluster);
   await registryGossip.connect();
   const registry = new GossipRegistry(config.nodeId, registryGossip);
   console.log(`[${config.nodeId}] Registry connected`);
@@ -269,25 +269,25 @@ async function runNode2() {
     },
   );
 
-  // Create cluster wrapper and start gossip protocol
-  const cluster = new CustomGossipCluster(gossipProtocol);
-  await cluster.start();
-  console.log(`[${config.nodeId}] Cluster started, gossip protocol running`);
+   // Create cluster wrapper and start gossip protocol
+   const cluster = new DistributedCluster(gossipProtocol);
+   await cluster.start();
+   console.log(`[${config.nodeId}] Cluster started, gossip protocol running`);
 
-  // Create registry for actor discovery
-  const registryGossip = new RegistryGossip(config.nodeId, transport, cluster);
-  await registryGossip.connect();
-  const registry = new GossipRegistry(config.nodeId, registryGossip);
-  console.log(`[${config.nodeId}] Registry connected`);
+   // Create registry for actor discovery
+   const registryGossip = new RegistrySync(config.nodeId, transport, cluster);
+   await registryGossip.connect();
+   const registry = new GossipRegistry(config.nodeId, registryGossip);
+   console.log(`[${config.nodeId}] Registry connected`);
 
-  // Create actor system
-  const system = new ActorSystem(cluster, transport, registry);
-  system.registerActorClasses([PingActor, PongActor]);
-  await system.start();
-  console.log(`[${config.nodeId}] Actor system started`);
+   // Create actor system
+   const system = new ActorSystem(cluster, transport, registry);
+   system.registerActorClasses([PingActor, PongActor]);
+   await system.start();
+   console.log(`[${config.nodeId}] Actor system started`);
 
-  // Spawn the PongActor with a registered name
-  const pongRef = system.spawn(PongActor, { name: "pong" });
+   // Spawn the PongActor with a registered name
+   const pongRef = system.spawn(PongActor, { name: "pong" });
   console.log(`[${config.nodeId}] PongActor spawned with ID: ${pongRef.id.id}`);
   console.log(`[${config.nodeId}] Waiting for pings...\n`);
 

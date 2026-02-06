@@ -5,7 +5,7 @@ import {
   ActorSystem,
   Cluster,
   InMemoryTransport,
-  InMemoryRegistry,
+  LocalRegistry,
   WatchRef,
   DownMessage,
   InfoMessage,
@@ -83,12 +83,12 @@ class CrashingActor extends Actor {
 describe("Actor Watching", () => {
   let system: ActorSystem;
   let transport: InMemoryTransport;
-  let registry: InMemoryRegistry;
+  let registry: LocalRegistry;
 
   beforeEach(async () => {
     const cluster = new MockCluster("test-node");
     transport = new InMemoryTransport("test-node");
-    registry = new InMemoryRegistry();
+    registry = new LocalRegistry();
     system = new ActorSystem(cluster, transport, registry);
     await system.start();
   });
@@ -120,7 +120,7 @@ describe("Actor Watching", () => {
   it("should receive DOWN message with error reason when watched actor crashes and is stopped", async () => {
     const cluster = new MockCluster("test-node-crash");
     const crashTransport = new InMemoryTransport("test-node-crash");
-    const crashRegistry = new InMemoryRegistry();
+    const crashRegistry = new LocalRegistry();
     const crashSystem = new ActorSystem(
       cluster,
       crashTransport,
@@ -257,7 +257,7 @@ describe("Actor Watching", () => {
   it("should receive killed reason when actor exceeds max restarts", async () => {
     const cluster = new MockCluster("test-node-restart");
     const restartTransport = new InMemoryTransport("test-node-restart");
-    const restartRegistry = new InMemoryRegistry();
+    const restartRegistry = new LocalRegistry();
     const restartSystem = new ActorSystem(
       cluster,
       restartTransport,

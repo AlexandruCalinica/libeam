@@ -4,7 +4,7 @@ import {
   ActorSystem,
   Cluster,
   InMemoryTransport,
-  InMemoryRegistry,
+  LocalRegistry,
   InfoMessage,
   TimeoutMessage,
 } from "../src";
@@ -130,7 +130,7 @@ describe("Actor Idle Timeout", () => {
   beforeEach(async () => {
     cluster = new MockCluster("test-node");
     const transport = new InMemoryTransport(cluster.nodeId);
-    const registry = new InMemoryRegistry();
+    const registry = new LocalRegistry();
     system = new ActorSystem(cluster, transport, registry, {
       strategy: "Stop",
       maxRestarts: 0,

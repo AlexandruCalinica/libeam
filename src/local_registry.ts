@@ -3,7 +3,7 @@ import { v4 as uuidv4 } from "uuid";
 
 const DEFAULT_RESERVATION_TTL_MS = 30000;
 
-export class InMemoryRegistry implements Registry {
+export class LocalRegistry implements Registry {
   private readonly registry = new Map<string, ActorLocation>();
   private readonly reservations = new Map<string, NameReservation>();
 

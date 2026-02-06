@@ -5,7 +5,7 @@ import {
   GossipProtocol,
   GossipUDP,
   PeerState,
-  CustomGossipCluster,
+  DistributedCluster,
   GossipMessage,
 } from "../src";
 import { EventEmitter } from "events";

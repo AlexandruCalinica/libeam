@@ -10,7 +10,7 @@ import {
   ActorRef,
   Cluster,
   InMemoryTransport,
-  InMemoryRegistry,
+  LocalRegistry,
   LinkRef,
   InfoMessage,
   ExitMessage,
@@ -220,7 +220,7 @@ async function main() {
 
   const cluster = new MockCluster("node1");
   const transport = new InMemoryTransport(cluster.nodeId);
-  const registry = new InMemoryRegistry();
+  const registry = new LocalRegistry();
   const system = new ActorSystem(cluster, transport, registry, {
     strategy: "Stop",
     maxRestarts: 0,

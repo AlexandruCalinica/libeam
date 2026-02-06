@@ -6,7 +6,7 @@ import {
   ActorSystem,
   Cluster,
   InMemoryTransport,
-  InMemoryRegistry,
+  LocalRegistry,
   InitContinue,
 } from "../src";
 
@@ -157,7 +157,7 @@ describe("handleContinue", () => {
   beforeEach(async () => {
     const cluster = new MockCluster("test-node");
     transport = new InMemoryTransport(cluster.nodeId);
-    const registry = new InMemoryRegistry();
+    const registry = new LocalRegistry();
     system = new ActorSystem(cluster, transport, registry);
     await system.start();
   });
@@ -212,7 +212,7 @@ describe("handleContinue", () => {
       // Create a system with Stop strategy to avoid infinite restarts
       const cluster = new MockCluster("test-crash-node");
       const crashTransport = new InMemoryTransport(cluster.nodeId);
-      const crashRegistry = new InMemoryRegistry();
+      const crashRegistry = new LocalRegistry();
       const crashSystem = new ActorSystem(
         cluster,
         crashTransport,

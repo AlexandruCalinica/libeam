@@ -5,7 +5,7 @@ import {
   ActorSystem,
   ActorRef,
   InMemoryTransport,
-  InMemoryRegistry,
+  LocalRegistry,
   Cluster,
   ChildSupervisionOptions,
 } from "../src";
@@ -137,7 +137,7 @@ class RestForOneParent extends Actor {
 describe("Child Supervision Strategies", () => {
   let system: ActorSystem;
   let transport: InMemoryTransport;
-  let registry: InMemoryRegistry;
+  let registry: LocalRegistry;
   let cluster: MockCluster;
 
   beforeEach(() => {
@@ -146,7 +146,7 @@ describe("Child Supervision Strategies", () => {
     terminationEvents.length = 0;
 
     transport = new InMemoryTransport("test-system");
-    registry = new InMemoryRegistry();
+    registry = new LocalRegistry();
     cluster = new MockCluster("test-system");
     system = new ActorSystem(cluster, transport, registry);
     system.start();

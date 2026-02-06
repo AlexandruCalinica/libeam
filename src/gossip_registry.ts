@@ -1,5 +1,5 @@
 import { Registry, ActorLocation, NameReservation } from "./registry";
-import { RegistryGossip } from "./registry_gossip";
+import { RegistrySync } from "./registry_sync";
 import { v4 as uuidv4 } from "uuid";
 
 const DEFAULT_RESERVATION_TTL_MS = 30000;
@@ -9,7 +9,7 @@ export class GossipRegistry implements Registry {
 
   constructor(
     private readonly nodeId: string,
-    private readonly gossip: RegistryGossip,
+    private readonly gossip: RegistrySync,
   ) {}
 
   async register(name: string, nodeId: string, actorId: string): Promise<void> {

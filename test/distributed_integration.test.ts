@@ -5,10 +5,10 @@ import {
   Actor,
   ActorSystem,
   InMemoryTransport,
-  CustomGossipCluster,
+  DistributedCluster,
   GossipProtocol,
   GossipUDP,
-  RegistryGossip,
+  RegistrySync,
   GossipRegistry,
   ActorId,
 } from "../src";
@@ -95,12 +95,12 @@ describe("Distributed Integration", () => {
       emit: () => {},
     } as any;
 
-    const cluster1 = new CustomGossipCluster(mockGossipProtocol1);
-    const cluster2 = new CustomGossipCluster(mockGossipProtocol2);
+    const cluster1 = new DistributedCluster(mockGossipProtocol1);
+    const cluster2 = new DistributedCluster(mockGossipProtocol2);
 
     // Create RegistryGossip instances
-    const registryGossip1 = new RegistryGossip("node1", transport1, cluster1);
-    const registryGossip2 = new RegistryGossip("node2", transport2, cluster2);
+    const registryGossip1 = new RegistrySync("node1", transport1, cluster1);
+    const registryGossip2 = new RegistrySync("node2", transport2, cluster2);
 
     await registryGossip1.connect();
     await registryGossip2.connect();
@@ -217,11 +217,11 @@ describe("Distributed Integration", () => {
       emit: () => {},
     } as any;
 
-    const cluster1 = new CustomGossipCluster(mockGossipProtocol1);
-    const cluster2 = new CustomGossipCluster(mockGossipProtocol2);
+    const cluster1 = new DistributedCluster(mockGossipProtocol1);
+    const cluster2 = new DistributedCluster(mockGossipProtocol2);
 
-    const registryGossip1 = new RegistryGossip("node1", transport1, cluster1);
-    const registryGossip2 = new RegistryGossip("node2", transport2, cluster2);
+    const registryGossip1 = new RegistrySync("node1", transport1, cluster1);
+    const registryGossip2 = new RegistrySync("node2", transport2, cluster2);
 
     await registryGossip1.connect();
     await registryGossip2.connect();

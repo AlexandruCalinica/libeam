@@ -18,7 +18,7 @@ import {
   ActorSystem,
   Cluster,
   InMemoryTransport,
-  InMemoryRegistry,
+  LocalRegistry,
   Migratable,
   InfoMessage,
   MovedMessage,
@@ -159,8 +159,8 @@ async function main() {
   await transport1.connect();
   await transport2.connect();
 
-  const registry1 = new InMemoryRegistry();
-  const registry2 = new InMemoryRegistry();
+  const registry1 = new LocalRegistry();
+  const registry2 = new LocalRegistry();
 
   const cluster1 = new MockCluster("node1");
   const cluster2 = new MockCluster("node2");

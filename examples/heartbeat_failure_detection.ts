@@ -21,7 +21,7 @@ import {
   Cluster,
   ClusterPeer,
   InMemoryTransport,
-  InMemoryRegistry,
+  LocalRegistry,
   HeartbeatConfig,
 } from "../src";
 
@@ -111,9 +111,9 @@ async function main() {
   cluster3.addPeer("node2");
 
   // Create registries
-  const registry1 = new InMemoryRegistry();
-  const registry2 = new InMemoryRegistry();
-  const registry3 = new InMemoryRegistry();
+  const registry1 = new LocalRegistry();
+  const registry2 = new LocalRegistry();
+  const registry3 = new LocalRegistry();
 
   // Fast heartbeat config for demo (detect failures quickly)
   const heartbeatConfig: Partial<HeartbeatConfig> = {

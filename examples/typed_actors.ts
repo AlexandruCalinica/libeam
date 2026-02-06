@@ -15,7 +15,7 @@ import {
   ActorRef,
   ActorSystem,
   Cluster,
-  InMemoryRegistry,
+  LocalRegistry,
   InMemoryTransport,
 } from "../src";
 
@@ -172,7 +172,7 @@ async function main() {
   // Setup
   const transport = new InMemoryTransport("node1");
   await transport.connect();
-  const registry = new InMemoryRegistry();
+  const registry = new LocalRegistry();
   const cluster = new MockCluster("node1");
   const system = new ActorSystem(cluster, transport, registry);
   system.registerActorClasses([CounterActor, CalculatorActor]);

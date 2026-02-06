@@ -8,7 +8,7 @@ import {
   combineHealthStatus,
   ActorSystem,
   InMemoryTransport,
-  InMemoryRegistry,
+  LocalRegistry,
   Cluster,
   Actor,
 } from "../src";
@@ -145,12 +145,12 @@ describe("Health Check", () => {
   describe("ActorSystem health", () => {
     let system: ActorSystem;
     let transport: InMemoryTransport;
-    let registry: InMemoryRegistry;
+    let registry: LocalRegistry;
     let cluster: MockCluster;
 
     beforeEach(async () => {
       transport = new InMemoryTransport("test-system");
-      registry = new InMemoryRegistry();
+      registry = new LocalRegistry();
       cluster = new MockCluster("test-system");
       system = new ActorSystem(cluster, transport, registry);
     });
@@ -200,7 +200,7 @@ describe("Health Check", () => {
   describe("HealthAggregator with ActorSystem", () => {
     it("should aggregate ActorSystem health", async () => {
       const transport = new InMemoryTransport("test-system");
-      const registry = new InMemoryRegistry();
+      const registry = new LocalRegistry();
       const cluster = new MockCluster("test-system");
       const system = new ActorSystem(cluster, transport, registry);
 

@@ -4,7 +4,7 @@ import {
   ActorSystem,
   Cluster,
   InMemoryTransport,
-  InMemoryRegistry,
+  LocalRegistry,
   isMigratable,
   Migratable,
   InfoMessage,
@@ -103,12 +103,12 @@ class AsyncMigratableActor extends Actor implements Migratable {
 describe("Actor Migration", () => {
   let system: ActorSystem;
   let transport: InMemoryTransport;
-  let registry: InMemoryRegistry;
+  let registry: LocalRegistry;
 
   beforeEach(async () => {
     const cluster = new MockCluster("test-node");
     transport = new InMemoryTransport("test-node");
-    registry = new InMemoryRegistry();
+    registry = new LocalRegistry();
 
     await transport.connect();
     system = new ActorSystem(cluster, transport, registry);
@@ -341,8 +341,8 @@ describe("Actor Migration", () => {
 describe("Distributed Actor Migration", () => {
   let transport1: InMemoryTransport;
   let transport2: InMemoryTransport;
-  let registry1: InMemoryRegistry;
-  let registry2: InMemoryRegistry;
+  let registry1: LocalRegistry;
+  let registry2: LocalRegistry;
   let system1: ActorSystem;
   let system2: ActorSystem;
 
@@ -363,8 +363,8 @@ describe("Distributed Actor Migration", () => {
     await transport1.connect();
     await transport2.connect();
 
-    registry1 = new InMemoryRegistry();
-    registry2 = new InMemoryRegistry();
+    registry1 = new LocalRegistry();
+    registry2 = new LocalRegistry();
 
     const cluster1 = new MockCluster("node1");
     const cluster2 = new MockCluster("node2");
@@ -502,8 +502,8 @@ describe("Distributed Actor Migration", () => {
 describe("Migration Watcher/Link Notifications", () => {
   let transport1: InMemoryTransport;
   let transport2: InMemoryTransport;
-  let registry1: InMemoryRegistry;
-  let registry2: InMemoryRegistry;
+  let registry1: LocalRegistry;
+  let registry2: LocalRegistry;
   let system1: ActorSystem;
   let system2: ActorSystem;
 
@@ -572,8 +572,8 @@ describe("Migration Watcher/Link Notifications", () => {
     await transport1.connect();
     await transport2.connect();
 
-    registry1 = new InMemoryRegistry();
-    registry2 = new InMemoryRegistry();
+    registry1 = new LocalRegistry();
+    registry2 = new LocalRegistry();
 
     const cluster1 = new MockCluster("node1");
     const cluster2 = new MockCluster("node2");
@@ -805,8 +805,8 @@ class SlowProcessingActor extends Actor implements Migratable {
 describe("Migration Edge Cases", () => {
   let transport1: InMemoryTransport;
   let transport2: InMemoryTransport;
-  let registry1: InMemoryRegistry;
-  let registry2: InMemoryRegistry;
+  let registry1: LocalRegistry;
+  let registry2: LocalRegistry;
   let system1: ActorSystem;
   let system2: ActorSystem;
 
@@ -820,8 +820,8 @@ describe("Migration Edge Cases", () => {
     await transport1.connect();
     await transport2.connect();
 
-    registry1 = new InMemoryRegistry();
-    registry2 = new InMemoryRegistry();
+    registry1 = new LocalRegistry();
+    registry2 = new LocalRegistry();
 
     const cluster1 = new MockCluster("node1");
     const cluster2 = new MockCluster("node2");

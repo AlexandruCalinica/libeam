@@ -6,7 +6,7 @@ import {
   ActorSystem,
   Cluster,
   InMemoryTransport,
-  InMemoryRegistry,
+  LocalRegistry,
   TimerRef,
 } from "../src";
 
@@ -98,12 +98,12 @@ class MultiTimerActor extends Actor {
 describe("Actor Timers", () => {
   let system: ActorSystem;
   let transport: InMemoryTransport;
-  let registry: InMemoryRegistry;
+  let registry: LocalRegistry;
 
   beforeEach(async () => {
     const cluster = new MockCluster("test-node");
     transport = new InMemoryTransport("test-node");
-    registry = new InMemoryRegistry();
+    registry = new LocalRegistry();
     system = new ActorSystem(cluster, transport, registry);
     await system.start();
   });

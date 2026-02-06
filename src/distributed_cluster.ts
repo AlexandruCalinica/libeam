@@ -1,4 +1,4 @@
-// src/custom_gossip_cluster.ts
+// src/distributed_cluster.ts
 
 import { EventEmitter } from "events";
 import { GossipProtocol, PeerState } from "./gossip_protocol";
@@ -9,7 +9,7 @@ import { HealthCheckable, ComponentHealth } from "./health";
  * A wrapper around the GossipProtocol that provides a cluster interface
  * compatible with the ActorSystem.
  */
-export class CustomGossipCluster
+export class DistributedCluster
   extends EventEmitter
   implements Cluster, HealthCheckable
 {

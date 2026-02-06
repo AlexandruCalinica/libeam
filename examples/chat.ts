@@ -5,7 +5,7 @@ import {
   ActorRef,
   ActorSystem,
   Cluster,
-  InMemoryRegistry,
+  LocalRegistry,
   InMemoryTransport,
 } from "../src";
 
@@ -106,8 +106,8 @@ async function main() {
   await transport1.connect();
   await transport2.connect();
 
-  const registry1 = new InMemoryRegistry();
-  const registry2 = new InMemoryRegistry();
+  const registry1 = new LocalRegistry();
+  const registry2 = new LocalRegistry();
   // @ts-ignore - share registry for demo
   registry2.registry = registry1.registry;
 
