@@ -8,10 +8,10 @@ import {
   DistributedCluster,
   GossipProtocol,
   GossipUDP,
-  RegistrySync,
   DistributedRegistry,
   ActorId,
 } from "../src";
+import { RegistrySync } from "../src/registry_sync";
 
 class CounterActor extends Actor {
   private count = 0;

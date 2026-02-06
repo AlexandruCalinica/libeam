@@ -7,10 +7,10 @@ import {
   ActorSystem,
   ActorId,
   Cluster,
-  RegistrySync,
   DistributedRegistry,
   DistributedCluster,
 } from "../src";
+import { RegistrySync } from "../src/registry_sync";
 import * as net from "net";
 
 // Helper to find an available TCP port
