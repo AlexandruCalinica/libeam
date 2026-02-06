@@ -51,7 +51,7 @@ libeam implements the core primitives from Elixir/OTP, adapted for the Node.js r
 | **Distribution** |
 | Cluster membership | `:net_kernel` | `Cluster`, `GossipProtocol` |
 | Remote messaging | Transparent | Via `Transport` |
-| Registry | `Registry`, `:global` | `Registry`, `GossipRegistry` |
+| Registry | `Registry`, `:global` | `Registry`, `DistributedRegistry` |
 | Actor migration | Manual process migration | `system.migrate()` |
 
 ### Not Implemented (Not Needed in Node.js)
@@ -120,7 +120,7 @@ For testing or single-process applications:
 import {
   ActorSystem,
   InMemoryTransport,
-  InMemoryRegistry,
+  LocalRegistry,
   Cluster,
 } from "libeam";
 
@@ -135,7 +135,7 @@ class SingleNodeCluster implements Cluster {
 async function main() {
   const cluster = new SingleNodeCluster("node1");
   const transport = new InMemoryTransport("node1");
-  const registry = new InMemoryRegistry();
+  const registry = new LocalRegistry();
 
   await transport.connect();
 
@@ -172,9 +172,9 @@ import {
   ZeroMQTransport,
   GossipProtocol,
   GossipUDP,
-  CustomGossipCluster,
-  GossipRegistry,
-  RegistryGossip,
+  DistributedCluster,
+  DistributedRegistry,
+  RegistrySync,
 } from "libeam";
 
 async function startNode(config: {
@@ -212,12 +212,12 @@ async function startNode(config: {
   );
 
   // 3. Setup cluster (wraps gossip protocol)
-  const cluster = new CustomGossipCluster(gossipProtocol);
+  const cluster = new DistributedCluster(gossipProtocol);
   await cluster.start();
 
-  // 4. Setup registry gossip for actor name resolution
-  const registryGossip = new RegistryGossip(nodeId, transport);
-  const registry = new GossipRegistry(nodeId, registryGossip);
+  // 4. Setup registry sync for actor name resolution
+  const registrySync = new RegistrySync(nodeId, transport, cluster);
+  const registry = new DistributedRegistry(nodeId, registrySync);
 
   // 5. Wire cluster membership changes to transport
   cluster.on("member_join", (peerId: string) => {
@@ -874,7 +874,7 @@ import {
   ActorRef,
   ActorSystem,
   InMemoryTransport,
-  InMemoryRegistry,
+  LocalRegistry,
   Cluster,
 } from "libeam";
 
@@ -948,7 +948,7 @@ process.on("SIGINT", () => shutdownNode(system, cluster, transport));
 ### Shutdown Sequence
 
 1. **ActorSystem.shutdown()**: Stops accepting new spawns, drains mailboxes, calls `terminate()` on all actors, unregisters named actors
-2. **CustomGossipCluster.leave()**: Broadcasts "leaving" status to peers so they immediately remove this node from membership (instead of waiting for failure timeout)
+2. **DistributedCluster.leave()**: Broadcasts "leaving" status to peers so they immediately remove this node from membership (instead of waiting for failure timeout)
 3. **Transport.disconnect()**: Closes network connections
 
 ### Shutdown Options
@@ -1045,10 +1045,10 @@ Libeam provides health check support for monitoring system status, useful for Ku
 
 ### Component Health
 
-Both `ActorSystem` and `CustomGossipCluster` implement `HealthCheckable`:
+Both `ActorSystem` and `DistributedCluster` implement `HealthCheckable`:
 
 ```typescript
-import { ActorSystem, CustomGossipCluster } from "libeam";
+import { ActorSystem, DistributedCluster } from "libeam";
 
 // Get health from individual components
 const systemHealth = system.getHealth();
@@ -1230,14 +1230,14 @@ npx ts-node examples/actor_migration.ts
 
 ```
 Node Instance:
-├── CustomGossipCluster (membership via UDP gossip)
+├── DistributedCluster (membership via UDP gossip)
 │   └── GossipProtocol → GossipUDP
 ├── Transport (ZeroMQ or InMemory)
 │   ├── ROUTER socket (RPC requests)
 │   ├── PUB socket (registry broadcasts)
 │   ├── SUB socket (registry subscriptions)
 │   └── DEALER pool (outgoing RPC)
-├── RegistryGossip (actor name → nodeId mapping)
+├── RegistrySync (actor name → nodeId mapping)
 │   └── VectorClock (conflict resolution)
 └── ActorSystem
     ├── Supervisor (crash handling)
