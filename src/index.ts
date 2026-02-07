@@ -22,3 +22,16 @@ export * from "./vector_clock";
 export * from "./distributed_registry";
 export * from "./heartbeat";
 export * from "./migration";
+export * from "./create_system";
+export * from "./create_actor";
+export * from "./create_actor";
+export {
+  LocalConfig,
+  DistributedConfig,
+  SupervisionConfig,
+  GossipConfig,
+  ActorBuilder,
+  ActorDefinition,
+  TypedActorRef,
+  ActorContext,
+} from "./types/functional";
