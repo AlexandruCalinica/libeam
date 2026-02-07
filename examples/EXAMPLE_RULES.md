@@ -2,6 +2,30 @@
 
 Guidelines for creating and maintaining examples in this directory.
 
+## Folder Structure
+
+Examples are organized into two categories based on API complexity:
+
+### `examples/high-level/`
+
+High-level examples use the functional API for simpler, more concise code:
+- Uses `createSystem()` and `createActor()` functions
+- Closure-based actors with implicit state
+- Chainable handler registration: `self.call().cast()`
+- Best for: Learning the basics, simple use cases, quick prototypes
+
+**Run:** `npx tsx examples/high-level/<name>.ts`
+
+### `examples/low-level/`
+
+Low-level examples use the class-based API for full control:
+- Uses `ActorSystem` class and `Actor` class inheritance
+- Explicit lifecycle management
+- Full access to advanced features (supervision, migration, etc.)
+- Best for: Production code, complex scenarios, advanced features
+
+**Run:** `npx tsx examples/low-level/<name>.ts`
+
 ## Purpose
 
 Examples serve as:
@@ -16,7 +40,11 @@ Examples serve as:
 
 Every example must execute successfully with:
 ```bash
-npx ts-node examples/<name>.ts
+# High-level examples
+npx tsx examples/high-level/<name>.ts
+
+# Low-level examples
+npx tsx examples/low-level/<name>.ts
 ```
 
 If an example requires external dependencies (e.g., multiple machines, network setup), document the requirements clearly at the top of the file.
@@ -101,14 +129,16 @@ This is particularly important for:
 
 ## Example Template
 
+### Low-Level Example
+
 ```typescript
-// examples/<name>.ts
+// examples/low-level/<name>.ts
 //
 // Demonstrates: <what this example shows>
 // Prerequisites: <any setup required>
-// Run: npx ts-node examples/<name>.ts
+// Run: npx tsx examples/low-level/<name>.ts
 
-import { Actor, ActorSystem, ... } from "../src";
+import { Actor, ActorSystem, ... } from "../../src";
 
 // --- Configuration ---
 const CONFIG = {
@@ -156,18 +186,34 @@ main().catch(console.error);
 
 ## Current Examples
 
+### Low-Level Examples (Class-Based API)
+
 | File | Level | Demonstrates |
 |------|-------|--------------|
-| `typed_actors.ts` | Basic | Type-safe actors with generics |
-| `timers.ts` | Basic | Actor timers (sendAfter, sendInterval, cancelTimer) |
-| `handle_continue.ts` | Basic | Async post-init work with handleContinue |
-| `idle_timeout.ts` | Basic | Idle timeout for inactivity handling |
-| `chat.ts` | Intermediate | Multi-node chat with in-memory transport |
-| `supervision_tree.ts` | Intermediate | Parent-child supervision strategies |
-| `message_stashing.ts` | Intermediate | Deferred message processing |
-| `actor_watching.ts` | Intermediate | Monitoring actor termination |
-| `actor_links.ts` | Intermediate | Bidirectional crash propagation with links |
-| `distributed_watching.ts` | Intermediate | Remote actor watching across nodes |
-| `distributed_linking.ts` | Intermediate | Remote actor linking with crash propagation |
-| `actor_migration.ts` | Intermediate | Actor migration between nodes with state preservation |
-| `distributed_ping_pong.ts` | Advanced | Real distributed actors via ZeroMQ |
+| `low-level/typed_actors.ts` | Basic | Type-safe actors with generics |
+| `low-level/timers.ts` | Basic | Actor timers (sendAfter, sendInterval, cancelTimer) |
+| `low-level/handle_continue.ts` | Basic | Async post-init work with handleContinue |
+| `low-level/idle_timeout.ts` | Basic | Idle timeout for inactivity handling |
+| `low-level/chat.ts` | Intermediate | Multi-node chat with in-memory transport |
+| `low-level/supervision_tree.ts` | Intermediate | Parent-child supervision strategies |
+| `low-level/message_stashing.ts` | Intermediate | Deferred message processing |
+| `low-level/actor_watching.ts` | Intermediate | Monitoring actor termination |
+| `low-level/actor_links.ts` | Intermediate | Bidirectional crash propagation with links |
+| `low-level/distributed_watching.ts` | Intermediate | Remote actor watching across nodes |
+| `low-level/distributed_linking.ts` | Intermediate | Remote actor linking with crash propagation |
+| `low-level/actor_migration.ts` | Intermediate | Actor migration between nodes with state preservation |
+| `low-level/distributed_ping_pong.ts` | Advanced | Real distributed actors via ZeroMQ |
+
+### High-Level Examples (Functional API)
+
+| File | Level | Demonstrates |
+|------|-------|--------------|
+| `high-level/counter.ts` | Basic | Simple counter with functional API |
+| `high-level/chat.ts` | Intermediate | Chat application with functional API |
+| `high-level/timers.ts` | Basic | Timer scheduling with functional API |
+| `high-level/watching.ts` | Intermediate | Actor watching with functional API |
+| `high-level/links.ts` | Intermediate | Actor linking with functional API |
+| `high-level/supervision.ts` | Intermediate | Supervision with functional API |
+| `high-level/idle_timeout.ts` | Basic | Idle timeout with functional API |
+| `high-level/handle_continue.ts` | Basic | Async initialization with functional API |
+| `high-level/message_stashing.ts` | Intermediate | Message stashing with functional API |
