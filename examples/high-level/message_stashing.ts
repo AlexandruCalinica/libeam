@@ -13,16 +13,6 @@ const Database = createActor((ctx, self) => {
   console.log("[Database] Starting connection...");
   self
     .call("status", () => ({ connected, queryCount }))
-    .call("query", (sql: string) => {
-      if (!connected) {
-        console.log(`[Database] Not connected, stashing call: "${sql}"`);
-        ctx.stash();
-        return;
-      }
-      queryCount++;
-      console.log(`[Database] Query #${queryCount}: "${sql}"`);
-      return { success: true, rows: queryCount };
-    })
     .cast("query", (sql: string) => {
       if (!connected) {
         console.log(`[Database] Not connected, stashing: "${sql}"`);
@@ -35,15 +25,12 @@ const Database = createActor((ctx, self) => {
     .cast("connect", async () => {
       await delay(200);
       connected = true;
-      console.log("[Database] Connected! Replaying stashed queries...");
+      console.log("[Database] Connected! Replaying stashed...");
       ctx.unstashAll();
     });
 });
-
-type OrderState = "pending" | "processing" | "shipped" | "cancelled";
-
 const OrderProcessor = createActor((ctx, self) => {
-  let state: OrderState = "pending";
+  let state: "pending" | "processing" | "shipped" | "cancelled" = "pending";
   const items: string[] = [];
   console.log("[Order] Created in pending state");
   self
@@ -72,10 +59,7 @@ const OrderProcessor = createActor((ctx, self) => {
       console.log(`[Order] Shipped: ${items.join(", ")}`);
     })
     .cast("cancel", () => {
-      if (state === "shipped") {
-        console.log("[Order] Can't cancel shipped order");
-        return;
-      }
+      if (state === "shipped") return;
       state = "cancelled";
       console.log("[Order] Cancelled — clearing stash");
       ctx.clearStash();
@@ -88,13 +72,10 @@ const OrderProcessor = createActor((ctx, self) => {
       ctx.unstashAll();
     });
 });
-
 const RateLimitedWorker = createActor((ctx, self) => {
   let busy = false;
   const processed: string[] = [];
-
   console.log("[Worker] Ready (one request at a time)");
-
   self
     .call("getProcessed", () => [...processed])
     .cast("request", async (id: string) => {
@@ -116,60 +97,49 @@ const RateLimitedWorker = createActor((ctx, self) => {
 async function main() {
   console.log("=== Message Stashing Example ===\n");
   const system = createSystem();
-
   try {
-    console.log("--- Demo 1: Database (async init with stashing) ---\n");
+    console.log("--- Demo 1: Database (stash until connected) ---\n");
     const db = system.spawn(Database, {});
-    db.cast({ method: "query", args: ["SELECT * FROM users"] });
-    db.cast({ method: "query", args: ["SELECT * FROM orders"] });
-    const resultPromise = db.call({ method: "query", args: ["SELECT COUNT(*) FROM products"] }, 5000);
-    db.cast({ method: "connect", args: [] });
-    const result = await resultPromise;
-    console.log(`\nCall result: ${JSON.stringify(result)}`);
-    await delay(100);
-    const status = await db.call({ method: "status", args: [] });
-    console.log(`Status: ${JSON.stringify(status)}\n`);
-
+    db.cast("query", "SELECT * FROM users");
+    db.cast("query", "SELECT * FROM orders");
+    db.cast("connect");
+    db.cast("query", "INSERT INTO logs VALUES (...)");
+    await delay(400);
+    console.log(`Status: ${JSON.stringify(await db.call("status"))}\n`);
     console.log("\n--- Demo 2: Order State Machine ---\n");
     const order = system.spawn(OrderProcessor, {});
-    order.cast({ method: "add_item", args: ["Laptop"] });
-    order.cast({ method: "add_item", args: ["Mouse"] });
+    order.cast("add_item", "Laptop");
+    order.cast("add_item", "Mouse");
     await delay(50);
-    order.cast({ method: "ship", args: [] });
+    order.cast("ship"); // stashed — not in processing yet
+    order.cast("start_processing");
     await delay(50);
-    order.cast({ method: "start_processing", args: [] });
+    order.cast("ship");
+    await delay(100);
+    console.log(`Order: ${JSON.stringify(await order.call("status"))}\n`);
+    console.log("\n--- Demo 3: clearStash on cancel ---\n");
+    const o2 = system.spawn(OrderProcessor, {});
+    o2.cast("add_item", "Book");
     await delay(50);
-    order.cast({ method: "ship", args: [] });
+    o2.cast("start_processing");
     await delay(50);
-    const orderStatus = await order.call({ method: "status", args: [] });
-    console.log(`\nOrder: ${JSON.stringify(orderStatus)}\n`);
-
-    console.log("\n--- Demo 3: Cancel (clears stash) ---\n");
-    const order2 = system.spawn(OrderProcessor, {});
-    order2.cast({ method: "add_item", args: ["Book"] });
+    o2.cast("add_item", "Pen");
+    o2.cast("add_item", "Paper");
     await delay(50);
-    order2.cast({ method: "start_processing", args: [] });
+    o2.cast("cancel");
+    o2.cast("reopen");
     await delay(50);
-    order2.cast({ method: "add_item", args: ["Pen"] });
-    order2.cast({ method: "add_item", args: ["Paper"] });
-    await delay(50);
-    order2.cast({ method: "cancel", args: [] });
-    await delay(50);
-    order2.cast({ method: "reopen", args: [] });
-    await delay(50);
-    const order2Status = await order2.call({ method: "status", args: [] });
-    console.log(`\nReopened: ${JSON.stringify(order2Status)}`);
-    console.log("(Pen and Paper were discarded on cancel)\n");
+    console.log(`Reopened: ${JSON.stringify(await o2.call("status"))}`);
+    console.log("(Pen and Paper discarded by clearStash)\n");
 
     console.log("\n--- Demo 4: Rate-Limited Worker ---\n");
-    const worker = system.spawn(RateLimitedWorker, {});
-    worker.cast({ method: "request", args: ["req-1"] });
-    worker.cast({ method: "request", args: ["req-2"] });
-    worker.cast({ method: "request", args: ["req-3"] });
-    worker.cast({ method: "request", args: ["req-4"] });
+    const w = system.spawn(RateLimitedWorker, {});
+    w.cast("request", "req-1");
+    w.cast("request", "req-2");
+    w.cast("request", "req-3");
+    w.cast("request", "req-4");
     await delay(600);
-    const processed = await worker.call({ method: "getProcessed", args: [] });
-    console.log(`\nProcessed in order: ${JSON.stringify(processed)}`);
+    console.log(`\nProcessed: ${JSON.stringify(await w.call("getProcessed"))}`);
   } finally {
     await system.shutdown();
   }

@@ -34,7 +34,7 @@ const UserSession = createActor((ctx, self, userId: string) => {
     .call("getUser", () => user)
     .onTerminate(() => console.log(`[Session:${userId}] Terminated`));
 
-  return { continue: { userId } } as any;
+  return { continue: { userId } };
 });
 
 const ConfigManager = createActor((ctx, self) => {
@@ -58,7 +58,7 @@ const ConfigManager = createActor((ctx, self) => {
     .call("getSources", () => sources)
     .onTerminate(() => console.log("[ConfigManager] Terminated"));
 
-  return { continue: { sources: ["database", "remote", "environment"] } } as any;
+  return { continue: { sources: ["database", "remote", "environment"] } };
 });
 
 const Service = createActor((ctx, self) => {
@@ -82,7 +82,7 @@ const Service = createActor((ctx, self) => {
     .call("getConnections", () => [...connections])
     .onTerminate(() => console.log("[Service] Terminated"));
 
-  return { continue: { endpoints: ["api.example.com", "db.example.com", "cache.example.com"] } } as any;
+  return { continue: { endpoints: ["api.example.com", "db.example.com", "cache.example.com"] } };
 });
 
 async function main() {
@@ -94,31 +94,31 @@ async function main() {
     console.log("--- Demo 1: User Session (async data loading) ---\n");
     const session = system.spawn(UserSession, { args: ["user-123"] });
     console.log("spawn() returned immediately!\n");
-    let ready = await session.call({ method: "isReady", args: [] });
+    let ready = await session.call("isReady");
     console.log(`Ready immediately: ${ready}`);
     await delay(150);
-    ready = await session.call({ method: "isReady", args: [] });
+    ready = await session.call("isReady");
     console.log(`Ready after 150ms: ${ready}`);
-    const user = await session.call({ method: "getUser", args: [] });
+    const user = await session.call("getUser");
     console.log(`User: ${JSON.stringify(user)}\n`);
 
     console.log("\n--- Demo 2: Config Manager (parallel loading) ---\n");
     const cfgMgr = system.spawn(ConfigManager, {});
     console.log("spawn() returned immediately!\n");
     await delay(150);
-    const config = await cfgMgr.call({ method: "getConfig", args: [] });
+    const config = await cfgMgr.call("getConfig");
     console.log(`Config: ${JSON.stringify(config)}`);
-    const srcs = await cfgMgr.call({ method: "getSources", args: [] });
+    const srcs = await cfgMgr.call("getSources");
     console.log(`Sources: ${JSON.stringify(srcs)}\n`);
 
     console.log("\n--- Demo 3: Service (sequential connections) ---\n");
     const svc = system.spawn(Service, {});
     console.log("spawn() returned immediately!\n");
-    let status = await svc.call({ method: "getStatus", args: [] });
+    let status = await svc.call("getStatus");
     console.log(`Status immediately: ${status}`);
     await delay(250);
-    status = await svc.call({ method: "getStatus", args: [] });
-    const conns = await svc.call({ method: "getConnections", args: [] });
+    status = await svc.call("getStatus");
+    const conns = await svc.call("getConnections");
     console.log(`Status after 250ms: ${status}`);
     console.log(`Connections: ${JSON.stringify(conns)}\n`);
   } finally {

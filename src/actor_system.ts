@@ -53,6 +53,8 @@ import {
   TimeoutError,
 } from "./errors";
 import { HealthCheckable, ComponentHealth } from "./health";
+import type { ActorDefinition } from "./types/functional";
+import { TypedActorRef } from "./types/functional";
 
 type Mailbox = any[];
 
@@ -654,10 +656,19 @@ export class ActorSystem implements HealthCheckable {
    * const value = await counter.call({ type: "get" });  // Returns typed result
    * ```
    */
+  spawn<
+    TArgs extends any[],
+    TCalls extends Record<string, (...args: any[]) => any>,
+    TCasts extends Record<string, (...args: any[]) => void>,
+  >(
+    actorClass: ActorDefinition<TArgs, TCalls, TCasts>,
+    options?: SpawnOptions,
+  ): TypedActorRef<TCalls, TCasts>;
   spawn<T extends Actor>(
     actorClass: new () => T,
-    options: SpawnOptions = {},
-  ): ActorRef {
+    options?: SpawnOptions,
+  ): ActorRef;
+  spawn(actorClass: any, options: SpawnOptions = {}): ActorRef {
     if (this._isShuttingDown) {
       throw new SystemShuttingDownError("spawn actors");
     }
@@ -667,7 +678,10 @@ export class ActorSystem implements HealthCheckable {
 
     const instanceId = uuidv4();
     const actorId = new ActorId(targetNodeId, instanceId, name);
-    const actorRef = new ActorRef(actorId, this);
+    const actorRef =
+      (actorClass as any).__type === "functional-actor"
+        ? new TypedActorRef(actorId, this)
+        : new ActorRef(actorId, this);
 
     if (targetNodeId === this.id) {
       // Local spawn
@@ -727,11 +741,21 @@ export class ActorSystem implements HealthCheckable {
    * @param options Spawn options
    * @returns Reference to the spawned child actor
    */
+  spawnChild<
+    TArgs extends any[],
+    TCalls extends Record<string, (...args: any[]) => any>,
+    TCasts extends Record<string, (...args: any[]) => void>,
+  >(
+    parentRef: ActorRef,
+    actorClass: ActorDefinition<TArgs, TCalls, TCasts>,
+    options?: SpawnOptions,
+  ): TypedActorRef<TCalls, TCasts>;
   spawnChild<T extends Actor>(
     parentRef: ActorRef,
     actorClass: new () => T,
-    options: SpawnOptions = {},
-  ): ActorRef {
+    options?: SpawnOptions,
+  ): ActorRef;
+  spawnChild(parentRef: ActorRef, actorClass: any, options: SpawnOptions = {}): ActorRef {
     if (this._isShuttingDown) {
       throw new SystemShuttingDownError("spawn child actors");
     }
@@ -747,7 +771,10 @@ export class ActorSystem implements HealthCheckable {
     const { name, args } = options;
     const instanceId = uuidv4();
     const actorId = new ActorId(this.id, instanceId, name);
-    const actorRef = new ActorRef(actorId, this);
+    const actorRef =
+      (actorClass as any).__type === "functional-actor"
+        ? new TypedActorRef(actorId, this)
+        : new ActorRef(actorId, this);
 
     // Create the child actor
     const actor = new actorClass();

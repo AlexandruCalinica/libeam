@@ -1,30 +1,15 @@
 // examples/high-level/links.ts
 //
-// Demonstrates: Bidirectional crash propagation with links
+// Demonstrates: Bidirectional crash propagation (link, unlink, trapExit)
 // Run: npx tsx examples/high-level/links.ts
-//
-// This example shows:
-// - ctx.link() for bidirectional crash propagation
-// - ctx.unlink() to remove a link
-// - ctx.setTrapExit(true) to receive exit messages instead of crashing
-// - self.info("exit", ...) to handle linked actor crashes
 
 import { createSystem, createActor, ActorRef, ExitMessage, LinkRef } from "../../src";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-// --- Worker: can crash on command ---
-
 const Worker = createActor((ctx, self, name: string) => {
-  let workDone = 0;
   console.log(`  [${name}] Started`);
-
   self
-    .call("getWork", () => workDone)
-    .cast("work", () => {
-      workDone++;
-      console.log(`  [${name}] Did work #${workDone}`);
-    })
     .cast("crash", () => {
       console.log(`  [${name}] Crashing!`);
       throw new Error(`${name} crashed`);
@@ -33,8 +18,6 @@ const Worker = createActor((ctx, self, name: string) => {
       console.log(`  [${name}] Terminated`);
     });
 });
-
-// --- Coordinator: links to workers (no trapExit) ---
 
 const Coordinator = createActor((ctx, self, name: string) => {
   const linked = new Map<string, { ref: ActorRef; linkRef: LinkRef }>();
@@ -59,8 +42,6 @@ const Coordinator = createActor((ctx, self, name: string) => {
       console.log(`  [Coord:${name}] Terminated`);
     });
 });
-
-// --- Supervisor: links with trapExit enabled ---
 
 const Supervisor = createActor((ctx, self, name: string) => {
   const workers = new Map<string, ActorRef>();
@@ -91,72 +72,65 @@ const Supervisor = createActor((ctx, self, name: string) => {
     });
 });
 
-// --- Main ---
-
 async function main() {
   console.log("=== Functional Links ===\n");
-  const system = createSystem({ supervision: { strategy: "Stop", maxRestarts: 0, periodMs: 5000 } });
+  const opts = { supervision: { strategy: "Stop" as const, maxRestarts: 0, periodMs: 5000 } };
+  const system = createSystem(opts);
 
   try {
-    // Demo 1: Basic link — crash propagates
     console.log("--- Demo 1: Crash Propagation ---\n");
-
     const w1 = system.spawn(Worker, { args: ["W1"] });
     const c1 = system.spawn(Coordinator, { args: ["C1"] });
-    c1.cast({ method: "linkWorker", args: ["W1", w1] });
+    c1.cast("linkWorker", "W1", w1);
     await sleep(50);
 
     console.log("\n  Crashing W1...\n");
-    w1.cast({ method: "crash", args: [] });
+    w1.cast("crash");
     await sleep(200);
 
     const remaining = system.system.getLocalActorIds();
     console.log(`  Remaining actors: ${remaining.length}`);
     console.log("  (Both W1 and C1 crashed due to link)\n");
 
-    // Demo 2: Unlink before crash — coordinator survives
     console.log("--- Demo 2: Unlink Before Crash ---\n");
-
     const w2 = system.spawn(Worker, { args: ["W2"] });
     const c2 = system.spawn(Coordinator, { args: ["C2"] });
-    c2.cast({ method: "linkWorker", args: ["W2", w2] });
+    c2.cast("linkWorker", "W2", w2);
     await sleep(50);
 
-    c2.cast({ method: "unlinkWorker", args: ["W2"] });
+    c2.cast("unlinkWorker", "W2");
     await sleep(50);
 
     console.log("\n  Crashing W2 (after unlink)...\n");
-    w2.cast({ method: "crash", args: [] });
+    w2.cast("crash");
     await sleep(200);
 
-    const linked = await c2.call({ method: "getLinked", args: [] });
+    const linked = await c2.call("getLinked");
     console.log(`  Coordinator alive! Linked: ${JSON.stringify(linked)}\n`);
     await system.system.stop(c2);
 
-    // Demo 3: trapExit — supervisor handles crashes
     console.log("--- Demo 3: trapExit ---\n");
-
     const sup = system.spawn(Supervisor, { args: ["S1"] });
     const w3 = system.spawn(Worker, { args: ["W3"] });
     const w4 = system.spawn(Worker, { args: ["W4"] });
 
-    sup.cast({ method: "linkWorker", args: ["W3", w3] });
-    sup.cast({ method: "linkWorker", args: ["W4", w4] });
+    sup.cast("linkWorker", "W3", w3);
+    sup.cast("linkWorker", "W4", w4);
     await sleep(50);
 
     console.log("\n  Crashing W3...\n");
-    w3.cast({ method: "crash", args: [] });
+    w3.cast("crash");
     await sleep(200);
 
-    let workers = await sup.call({ method: "getWorkers", args: [] });
+    let workers = await sup.call("getWorkers");
     console.log(`  Supervisor alive! Workers: ${JSON.stringify(workers)}`);
 
     console.log("\n  Crashing W4...\n");
-    w4.cast({ method: "crash", args: [] });
+    w4.cast("crash");
     await sleep(200);
 
-    workers = await sup.call({ method: "getWorkers", args: [] });
-    const exitLog = await sup.call({ method: "getExitLog", args: [] });
+    workers = await sup.call("getWorkers");
+    const exitLog = await sup.call("getExitLog");
     console.log(`  Workers: ${JSON.stringify(workers)}`);
     console.log(`  Exit log: ${JSON.stringify(exitLog)}`);
   } finally {

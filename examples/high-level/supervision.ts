@@ -53,20 +53,20 @@ async function main() {
     console.log("Only the crashed child is restarted.\n");
 
     const sup1 = system.spawn(OneForOneSupervisor, {});
-    const w1: ActorRef = await sup1.call({ method: "spawn", args: ["Worker-A"] });
-    const w2: ActorRef = await sup1.call({ method: "spawn", args: ["Worker-B"] });
-    const w3: ActorRef = await sup1.call({ method: "spawn", args: ["Worker-C"] });
+    const w1: ActorRef = await sup1.call("spawn", "Worker-A");
+    const w2: ActorRef = await sup1.call("spawn", "Worker-B");
+    const w3: ActorRef = await sup1.call("spawn", "Worker-C");
 
-    w1.cast({ method: "work", args: [] });
-    w2.cast({ method: "work", args: [] });
-    w3.cast({ method: "work", args: [] });
+    w1.cast("work");
+    w2.cast("work");
+    w3.cast("work");
     await delay(100);
 
     console.log("\nCrashing Worker-B...");
-    w2.cast({ method: "crash", args: [] });
+    w2.cast("crash");
     await delay(200);
 
-    const statusA = await w1.call({ method: "status", args: [] });
+    const statusA = await w1.call("status");
     console.log(`Worker-A status: workCount=${statusA.workCount} (preserved)`);
     console.log("(Only Worker-B was restarted, A and C kept their state)\n");
 
@@ -74,17 +74,17 @@ async function main() {
     console.log("All children restart when one crashes.\n");
 
     const sup2 = system.spawn(OneForAllSupervisor, {});
-    const a1: ActorRef = await sup2.call({ method: "spawn", args: ["Alpha"] });
-    const a2: ActorRef = await sup2.call({ method: "spawn", args: ["Beta"] });
-    const a3: ActorRef = await sup2.call({ method: "spawn", args: ["Gamma"] });
+    const a1: ActorRef = await sup2.call("spawn", "Alpha");
+    const a2: ActorRef = await sup2.call("spawn", "Beta");
+    const a3: ActorRef = await sup2.call("spawn", "Gamma");
 
-    a1.cast({ method: "work", args: [] });
-    a2.cast({ method: "work", args: [] });
-    a3.cast({ method: "work", args: [] });
+    a1.cast("work");
+    a2.cast("work");
+    a3.cast("work");
     await delay(100);
 
     console.log("\nCrashing Beta...");
-    a2.cast({ method: "crash", args: [] });
+    a2.cast("crash");
     await delay(200);
     console.log("(All workers restarted — Alpha, Beta, Gamma all lost state)\n");
 
@@ -102,11 +102,11 @@ async function main() {
     });
 
     const sup3 = system.spawn(LimitedSupervisor, {});
-    const child: ActorRef = await sup3.call({ method: "spawn", args: ["Unstable"] });
+    const child: ActorRef = await sup3.call("spawn", "Unstable");
 
     for (let i = 1; i <= 3; i++) {
       console.log(`Crash #${i}:`);
-      child.cast({ method: "crash", args: [] });
+      child.cast("crash");
       await delay(200);
     }
     console.log("(Child stopped permanently after exceeding 2 restart limit)\n");

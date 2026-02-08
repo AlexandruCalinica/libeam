@@ -10,6 +10,8 @@
 
 import { createSystem, createActor, ActorRef } from "../../src";
 
+const methodMsg = (method: string, ...args: any[]) => ({ method, args });
+
 // --- Actor Definitions ---
 
 const ChatRoom = createActor((ctx, self) => {
@@ -33,7 +35,7 @@ const ChatRoom = createActor((ctx, self) => {
 
   function broadcast(text: string) {
     for (const ref of participants.values()) {
-      ref.cast({ method: "notify", args: [text] });
+      ref.cast(methodMsg("notify", text));
     }
   }
 });
@@ -42,7 +44,7 @@ const User = createActor((ctx, self, name: string, roomRef: ActorRef) => {
   const received: string[] = [];
 
   // Join the room on init
-  roomRef.cast({ method: "join", args: [name, ctx.self] });
+  roomRef.cast(methodMsg("join", name, ctx.self));
 
   self
     .call("getMessages", () => [...received])
@@ -51,7 +53,7 @@ const User = createActor((ctx, self, name: string, roomRef: ActorRef) => {
       console.log(`  [${name}] ${text}`);
     })
     .cast("say", (text: string) => {
-      roomRef.cast({ method: "message", args: [name, text] });
+      roomRef.cast(methodMsg("message", name, text));
     });
 });
 
@@ -71,22 +73,22 @@ async function main() {
     const charlie = system.spawn(User, { args: ["Charlie", room] });
     await new Promise((r) => setTimeout(r, 100));
 
-    const members = await room.call({ method: "getParticipants", args: [] });
+    const members = await room.call("getParticipants");
     console.log(`\n  Participants: ${JSON.stringify(members)}\n`);
 
     // Simulate conversation
     console.log("--- Conversation ---\n");
-    alice.cast({ method: "say", args: ["Hello everyone!"] });
+    alice.cast("say", "Hello everyone!");
     await new Promise((r) => setTimeout(r, 100));
 
-    bob.cast({ method: "say", args: ["Hi Alice!"] });
+    bob.cast("say", "Hi Alice!");
     await new Promise((r) => setTimeout(r, 100));
 
-    charlie.cast({ method: "say", args: ["Hey folks, what's up?"] });
+    charlie.cast("say", "Hey folks, what's up?");
     await new Promise((r) => setTimeout(r, 100));
 
     // Check Alice's received messages
-    const aliceMessages = await alice.call({ method: "getMessages", args: [] });
+    const aliceMessages = await alice.call("getMessages");
     console.log(`\n  Alice received ${aliceMessages.length} messages`);
   } finally {
     await system.shutdown();

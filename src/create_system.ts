@@ -12,7 +12,12 @@ import { DistributedRegistry } from "./distributed_registry";
 import { Transport } from "./transport";
 import { Cluster } from "./cluster";
 import { Registry } from "./registry";
-import { LocalConfig, DistributedConfig } from "./types/functional";
+import {
+  ActorDefinition,
+  DistributedConfig,
+  LocalConfig,
+  TypedActorRef,
+} from "./types/functional";
 import { v4 as uuidv4 } from "uuid";
 
 const DEFAULT_GOSSIP_OPTIONS: GossipOptions = {
@@ -29,6 +34,14 @@ const DEFAULT_GOSSIP_OPTIONS: GossipOptions = {
  */
 export interface System {
   /** Spawn an actor (class-based or functional) */
+  spawn<
+    TArgs extends any[],
+    TCalls extends Record<string, (...args: any[]) => any>,
+    TCasts extends Record<string, (...args: any[]) => void>,
+  >(
+    actorClass: ActorDefinition<TArgs, TCalls, TCasts>,
+    options?: SpawnOptions,
+  ): TypedActorRef<TCalls, TCasts>;
   spawn<T extends Actor>(actorClass: new () => T, options?: SpawnOptions): ActorRef;
   /** Register an actor class for remote spawning */
   register(actorClass: new () => Actor): void;
@@ -59,7 +72,16 @@ class SystemImpl implements System {
     this.nodeId = system.id;
   }
 
-  spawn<T extends Actor>(actorClass: new () => T, options?: SpawnOptions): ActorRef {
+  spawn<
+    TArgs extends any[],
+    TCalls extends Record<string, (...args: any[]) => any>,
+    TCasts extends Record<string, (...args: any[]) => void>,
+  >(
+    actorClass: ActorDefinition<TArgs, TCalls, TCasts>,
+    options?: SpawnOptions,
+  ): TypedActorRef<TCalls, TCasts>;
+  spawn<T extends Actor>(actorClass: new () => T, options?: SpawnOptions): ActorRef;
+  spawn(actorClass: any, options?: SpawnOptions): ActorRef {
     return this.system.spawn(actorClass, options);
   }
 
