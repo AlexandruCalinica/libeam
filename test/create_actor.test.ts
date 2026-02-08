@@ -19,8 +19,8 @@ describe("createActor", () => {
         self.call("get", () => count);
       });
 
-      const ref = system.spawn(Counter as any, { args: [42] });
-      const result = await ref.call({ method: "get", args: [] });
+      const ref = system.spawn(Counter, { args: [42] });
+      const result = await ref.call("get");
       expect(result).toBe(42);
     });
 
@@ -29,8 +29,8 @@ describe("createActor", () => {
         self.call("add", (a: number, b: number) => a + b);
       });
 
-      const ref = system.spawn(Calculator as any, {});
-      const result = await ref.call({ method: "add", args: [3, 5] });
+      const ref = system.spawn(Calculator, {});
+      const result = await ref.call("add", 3, 5);
       expect(result).toBe(8);
     });
   });
@@ -46,12 +46,12 @@ describe("createActor", () => {
           .call("getValue", () => receivedValue);
       });
 
-      const ref = system.spawn(Receiver as any, {});
-      ref.cast({ method: "receive", args: [100] });
+      const ref = system.spawn(Receiver, {});
+      ref.cast("receive", 100);
 
       await new Promise((r) => setTimeout(r, 50));
 
-      const result = await ref.call({ method: "getValue", args: [] });
+      const result = await ref.call("getValue");
       expect(result).toBe(100);
     });
   });
@@ -67,12 +67,12 @@ describe("createActor", () => {
           .call("add", (n: number) => (count += n));
       });
 
-      const ref = system.spawn(Counter as any, { args: [10] });
+      const ref = system.spawn(Counter, { args: [10] });
 
-      expect(await ref.call({ method: "get", args: [] })).toBe(10);
-      expect(await ref.call({ method: "increment", args: [] })).toBe(11);
-      expect(await ref.call({ method: "decrement", args: [] })).toBe(10);
-      expect(await ref.call({ method: "add", args: [5] })).toBe(15);
+      expect(await ref.call("get")).toBe(10);
+      expect(await ref.call("increment")).toBe(11);
+      expect(await ref.call("decrement")).toBe(10);
+      expect(await ref.call("add", 5)).toBe(15);
     });
 
     it("should create an actor with multiple cast handlers", async () => {
@@ -90,14 +90,14 @@ describe("createActor", () => {
           .call("getData", () => ({ name, age }));
       });
 
-      const ref = system.spawn(Store as any, {});
+      const ref = system.spawn(Store, {});
 
-      ref.cast({ method: "setName", args: ["Alice"] });
-      ref.cast({ method: "setAge", args: [30] });
+      ref.cast("setName", "Alice");
+      ref.cast("setAge", 30);
 
       await new Promise((r) => setTimeout(r, 50));
 
-      const data = await ref.call({ method: "getData", args: [] });
+      const data = await ref.call("getData");
       expect(data).toEqual({ name: "Alice", age: 30 });
     });
   });
@@ -118,18 +118,18 @@ describe("createActor", () => {
           });
       });
 
-      const ref = system.spawn(ChainedActor as any, { args: [5] });
+      const ref = system.spawn(ChainedActor, { args: [5] });
 
-      expect(await ref.call({ method: "get", args: [] })).toBe(5);
-      expect(await ref.call({ method: "double", args: [] })).toBe(10);
+      expect(await ref.call("get")).toBe(5);
+      expect(await ref.call("double")).toBe(10);
 
-      ref.cast({ method: "set", args: [20] });
+      ref.cast("set", 20);
       await new Promise((r) => setTimeout(r, 50));
-      expect(await ref.call({ method: "get", args: [] })).toBe(20);
+      expect(await ref.call("get")).toBe(20);
 
-      ref.cast({ method: "reset", args: [] });
+      ref.cast("reset");
       await new Promise((r) => setTimeout(r, 50));
-      expect(await ref.call({ method: "get", args: [] })).toBe(5);
+      expect(await ref.call("get")).toBe(5);
     });
   });
 
@@ -142,17 +142,17 @@ describe("createActor", () => {
           .call("get", () => count);
       });
 
-      const ref1 = system.spawn(Counter as any, {});
-      const ref2 = system.spawn(Counter as any, {});
+      const ref1 = system.spawn(Counter, {});
+      const ref2 = system.spawn(Counter, {});
 
-      await ref1.call({ method: "increment", args: [] });
-      await ref1.call({ method: "increment", args: [] });
-      await ref1.call({ method: "increment", args: [] });
+      await ref1.call("increment");
+      await ref1.call("increment");
+      await ref1.call("increment");
 
-      await ref2.call({ method: "increment", args: [] });
+      await ref2.call("increment");
 
-      expect(await ref1.call({ method: "get", args: [] })).toBe(3);
-      expect(await ref2.call({ method: "get", args: [] })).toBe(1);
+      expect(await ref1.call("get")).toBe(3);
+      expect(await ref2.call("get")).toBe(1);
     });
   });
 
@@ -164,8 +164,8 @@ describe("createActor", () => {
         }
       );
 
-      const ref = system.spawn(ConfigActor as any, { args: ["test", 42, true] });
-      const config = await ref.call({ method: "getConfig", args: [] });
+      const ref = system.spawn(ConfigActor, { args: ["test", 42, true] });
+      const config = await ref.call("getConfig");
 
       expect(config).toEqual({ name: "test", value: 42, enabled: true });
     });
@@ -175,8 +175,8 @@ describe("createActor", () => {
         self.call("ping", () => "pong");
       });
 
-      const ref = system.spawn(SimpleActor as any, {});
-      const result = await ref.call({ method: "ping", args: [] });
+      const ref = system.spawn(SimpleActor, {});
+      const result = await ref.call("ping");
       expect(result).toBe("pong");
     });
   });
@@ -190,8 +190,8 @@ describe("createActor", () => {
         self.call("getSelfId", () => ctx.self.id.id);
       });
 
-      const ref = system.spawn(SelfAwareActor as any, {});
-      const selfId = await ref.call({ method: "getSelfId", args: [] });
+      const ref = system.spawn(SelfAwareActor, {});
+      const selfId = await ref.call("getSelfId");
 
       expect(selfId).toBe(ref.id.id);
       expect(capturedSelfId).toBe(ref.id.id);
@@ -207,8 +207,8 @@ describe("createActor", () => {
         self.call("hasParent", () => ctx.parent !== undefined);
       });
 
-      const ref = system.spawn(RootActor as any, {});
-      const hasParent = await ref.call({ method: "hasParent", args: [] });
+      const ref = system.spawn(RootActor, {});
+      const hasParent = await ref.call("hasParent");
 
       expect(hasParent).toBe(false);
       expect(capturedParent).toBeUndefined();
@@ -231,19 +231,16 @@ describe("createActor", () => {
           })
           .call("callChild", async () => {
             if (!childRef) return null;
-            return childRef.call({ method: "getName", args: [] });
+            return childRef.call("getName");
           });
       });
 
-      const parentRef = system.spawn(ParentActor as any, {});
-      const childId = await parentRef.call({
-        method: "spawnChild",
-        args: ["child1"],
-      });
+      const parentRef = system.spawn(ParentActor, {});
+      const childId = await parentRef.call("spawnChild", "child1");
 
       expect(childId).toBeDefined();
 
-      const childName = await parentRef.call({ method: "callChild", args: [] });
+      const childName = await parentRef.call("callChild");
       expect(childName).toBe("child1");
     });
   });
@@ -270,19 +267,16 @@ describe("createActor", () => {
           });
       });
 
-      const targetRef = system.spawn(TargetActor as any, {});
-      const watcherRef = system.spawn(WatcherActor as any, {});
+      const targetRef = system.spawn(TargetActor, {});
+      const watcherRef = system.spawn(WatcherActor, {});
 
-      await watcherRef.call({ method: "setTarget", args: [targetRef] });
+      await watcherRef.call("setTarget", targetRef);
 
       await system.system.stop(targetRef);
 
       await new Promise((r) => setTimeout(r, 100));
 
-      const status = await watcherRef.call({
-        method: "getDownStatus",
-        args: [],
-      });
+      const status = await watcherRef.call("getDownStatus");
       expect(status.downReceived).toBe(true);
       expect(status.downActorId).toBe(targetRef.id.id);
     });
@@ -312,19 +306,16 @@ describe("createActor", () => {
           });
       });
 
-      const linkedRef = system.spawn(LinkedActor as any, {});
-      const linkingRef = system.spawn(LinkingActor as any, {});
+      const linkedRef = system.spawn(LinkedActor, {});
+      const linkingRef = system.spawn(LinkingActor, {});
 
-      await linkingRef.call({ method: "linkTo", args: [linkedRef] });
+      await linkingRef.call("linkTo", linkedRef);
 
       await system.system.stop(linkedRef);
 
       await new Promise((r) => setTimeout(r, 100));
 
-      const status = await linkingRef.call({
-        method: "getExitStatus",
-        args: [],
-      });
+      const status = await linkingRef.call("getExitStatus");
       expect(status.exitReceived).toBe(true);
     });
   });
@@ -339,9 +330,9 @@ describe("createActor", () => {
         });
       });
 
-      const ref = system.spawn(TerminatingActor as any, {});
+      const ref = system.spawn(TerminatingActor, {});
 
-      expect(await ref.call({ method: "ping", args: [] })).toBe("pong");
+      expect(await ref.call("ping")).toBe("pong");
 
       await system.system.stop(ref);
 
@@ -358,7 +349,7 @@ describe("createActor", () => {
         });
       });
 
-      const ref = system.spawn(AsyncTerminatingActor as any, {});
+      const ref = system.spawn(AsyncTerminatingActor, {});
       await system.system.stop(ref);
 
       expect(cleanupComplete).toBe(true);
@@ -377,7 +368,7 @@ describe("createActor", () => {
         return { continue: { initialized: true } };
       });
 
-      system.spawn(SyncContinueActor as any, {});
+      system.spawn(SyncContinueActor, {});
 
       await new Promise((r) => setTimeout(r, 50));
 
@@ -397,7 +388,7 @@ describe("createActor", () => {
         return { continue: "async-setup" };
       });
 
-      system.spawn(AsyncContinueActor as any, {});
+      system.spawn(AsyncContinueActor, {});
 
       await new Promise((r) => setTimeout(r, 80));
 
@@ -415,9 +406,9 @@ describe("createActor", () => {
         self.call("ping", () => "pong");
       });
 
-      const ref = system.spawn(NoContinueActor as any, {});
+      const ref = system.spawn(NoContinueActor, {});
 
-      expect(await ref.call({ method: "ping", args: [] })).toBe("pong");
+      expect(await ref.call("ping")).toBe("pong");
       await new Promise((r) => setTimeout(r, 50));
 
       expect(continueCallCount).toBe(0);
@@ -434,7 +425,7 @@ describe("createActor", () => {
         return { continue: { token: "abc123", retries: 2 } };
       });
 
-      system.spawn(DataContinueActor as any, {});
+      system.spawn(DataContinueActor, {});
 
       await new Promise((r) => setTimeout(r, 50));
 
@@ -461,17 +452,17 @@ describe("createActor", () => {
         return { continue: 5 };
       });
 
-      const ref = system.spawn(ContinueThenOperateActor as any, {});
+      const ref = system.spawn(ContinueThenOperateActor, {});
 
       await new Promise((r) => setTimeout(r, 80));
 
-      expect(await ref.call({ method: "isReady", args: [] })).toBe(true);
-      expect(await ref.call({ method: "get", args: [] })).toBe(5);
+      expect(await ref.call("isReady")).toBe(true);
+      expect(await ref.call("get")).toBe(5);
 
-      ref.cast({ method: "add", args: [7] });
+      ref.cast("add", 7);
       await new Promise((r) => setTimeout(r, 50));
 
-      expect(await ref.call({ method: "get", args: [] })).toBe(12);
+      expect(await ref.call("get")).toBe(12);
     });
   });
 
@@ -496,17 +487,17 @@ describe("createActor", () => {
           .call("getProcessed", () => [...processed]);
       });
 
-      const ref = system.spawn(DeferredActor as any, {});
+      const ref = system.spawn(DeferredActor, {});
 
-      ref.cast({ method: "work", args: ["a"] });
+      ref.cast("work", "a");
       await new Promise((r) => setTimeout(r, 50));
 
-      expect(await ref.call({ method: "getProcessed", args: [] })).toEqual([]);
+      expect(await ref.call("getProcessed")).toEqual([]);
 
-      await ref.call({ method: "release", args: [] });
+      await ref.call("release");
       await new Promise((r) => setTimeout(r, 50));
 
-      expect(await ref.call({ method: "getProcessed", args: [] })).toEqual(["a"]);
+      expect(await ref.call("getProcessed")).toEqual(["a"]);
     });
 
     it("unstashAll() replays all stashed messages in FIFO order", async () => {
@@ -529,19 +520,19 @@ describe("createActor", () => {
           .call("getProcessed", () => [...processed]);
       });
 
-      const ref = system.spawn(QueueActor as any, {});
+      const ref = system.spawn(QueueActor, {});
 
-      ref.cast({ method: "work", args: ["first"] });
-      ref.cast({ method: "work", args: ["second"] });
-      ref.cast({ method: "work", args: ["third"] });
+      ref.cast("work", "first");
+      ref.cast("work", "second");
+      ref.cast("work", "third");
       await new Promise((r) => setTimeout(r, 50));
 
-      expect(await ref.call({ method: "getProcessed", args: [] })).toEqual([]);
+      expect(await ref.call("getProcessed")).toEqual([]);
 
-      await ref.call({ method: "unstashEverything", args: [] });
+      await ref.call("unstashEverything");
       await new Promise((r) => setTimeout(r, 50));
 
-      expect(await ref.call({ method: "getProcessed", args: [] })).toEqual([
+      expect(await ref.call("getProcessed")).toEqual([
         "first",
         "second",
         "third",
@@ -569,27 +560,27 @@ describe("createActor", () => {
           .call("getProcessed", () => [...processed]);
       });
 
-      const ref = system.spawn(OneByOneActor as any, {});
+      const ref = system.spawn(OneByOneActor, {});
 
-      ref.cast({ method: "work", args: ["one"] });
-      ref.cast({ method: "work", args: ["two"] });
-      ref.cast({ method: "work", args: ["three"] });
+      ref.cast("work", "one");
+      ref.cast("work", "two");
+      ref.cast("work", "three");
       await new Promise((r) => setTimeout(r, 50));
 
-      await ref.call({ method: "releaseOne", args: [] });
+      await ref.call("releaseOne");
       await new Promise((r) => setTimeout(r, 50));
-      expect(await ref.call({ method: "getProcessed", args: [] })).toEqual(["one"]);
+      expect(await ref.call("getProcessed")).toEqual(["one"]);
 
-      await ref.call({ method: "releaseOne", args: [] });
+      await ref.call("releaseOne");
       await new Promise((r) => setTimeout(r, 50));
-      expect(await ref.call({ method: "getProcessed", args: [] })).toEqual([
+      expect(await ref.call("getProcessed")).toEqual([
         "one",
         "two",
       ]);
 
-      await ref.call({ method: "releaseOne", args: [] });
+      await ref.call("releaseOne");
       await new Promise((r) => setTimeout(r, 50));
-      expect(await ref.call({ method: "getProcessed", args: [] })).toEqual([
+      expect(await ref.call("getProcessed")).toEqual([
         "one",
         "two",
         "three",
@@ -619,18 +610,18 @@ describe("createActor", () => {
           .call("getProcessed", () => [...processed]);
       });
 
-      const ref = system.spawn(ClearableActor as any, {});
+      const ref = system.spawn(ClearableActor, {});
 
-      ref.cast({ method: "work", args: ["stashed-1"] });
-      ref.cast({ method: "work", args: ["stashed-2"] });
+      ref.cast("work", "stashed-1");
+      ref.cast("work", "stashed-2");
       await new Promise((r) => setTimeout(r, 50));
 
-      await ref.call({ method: "clear", args: [] });
-      await ref.call({ method: "unstashEverything", args: [] });
-      ref.cast({ method: "work", args: ["fresh"] });
+      await ref.call("clear");
+      await ref.call("unstashEverything");
+      ref.cast("work", "fresh");
       await new Promise((r) => setTimeout(r, 50));
 
-      expect(await ref.call({ method: "getProcessed", args: [] })).toEqual([
+      expect(await ref.call("getProcessed")).toEqual([
         "fresh",
       ]);
     });
@@ -658,16 +649,16 @@ describe("createActor", () => {
         return { continue: "boot" };
       });
 
-      const ref = system.spawn(InitDeferredActor as any, {});
+      const ref = system.spawn(InitDeferredActor, {});
 
-      ref.cast({ method: "work", args: ["during-init-1"] });
-      ref.cast({ method: "work", args: ["during-init-2"] });
+      ref.cast("work", "during-init-1");
+      ref.cast("work", "during-init-2");
 
       await new Promise((r) => setTimeout(r, 20));
-      expect(await ref.call({ method: "getProcessed", args: [] })).toEqual([]);
+      expect(await ref.call("getProcessed")).toEqual([]);
 
       await new Promise((r) => setTimeout(r, 80));
-      expect(await ref.call({ method: "getProcessed", args: [] })).toEqual([
+      expect(await ref.call("getProcessed")).toEqual([
         "during-init-1",
         "during-init-2",
       ]);
@@ -694,12 +685,12 @@ describe("createActor", () => {
           });
       });
 
-      const ref = system.spawn(CallStashActor as any, {});
+      const ref = system.spawn(CallStashActor, {});
 
-      const pending = ref.call({ method: "request", args: ["hello"] }, 5000);
+      const pending = ref.call("request", "hello");
 
       await new Promise((r) => setTimeout(r, 20));
-      await ref.call({ method: "clear", args: [] });
+      await ref.call("clear");
 
       await expect(pending).rejects.toThrow("Stashed message discarded");
     });
@@ -727,28 +718,25 @@ describe("createActor", () => {
           });
       });
 
-      const ref = system.spawn(StatefulActor as any, {});
+      const ref = system.spawn(StatefulActor, {});
 
-      expect(await ref.call({ method: "processMessage", args: ["hello"] })).toBe(
+      expect(await ref.call("processMessage", "hello")).toBe(
         1
       );
-      expect(await ref.call({ method: "getProcessedCount", args: [] })).toBe(1);
+      expect(await ref.call("getProcessedCount")).toBe(1);
 
-      ref.cast({ method: "addMessage", args: ["world"] });
-      ref.cast({ method: "addMessage", args: ["!"] });
+      ref.cast("addMessage", "world");
+      ref.cast("addMessage", "!");
 
       await new Promise((r) => setTimeout(r, 50));
 
-      const messages = await ref.call({ method: "getMessages", args: [] });
+      const messages = await ref.call("getMessages");
       expect(messages).toEqual(["hello", "world", "!"]);
 
-      ref.cast({ method: "clearMessages", args: [] });
+      ref.cast("clearMessages");
       await new Promise((r) => setTimeout(r, 50));
 
-      const clearedMessages = await ref.call({
-        method: "getMessages",
-        args: [],
-      });
+      const clearedMessages = await ref.call("getMessages");
       expect(clearedMessages).toEqual([]);
     });
   });
@@ -759,10 +747,10 @@ describe("createActor", () => {
         self.call("known", () => "ok");
       });
 
-      const ref = system.spawn(SimpleActor as any, {});
+      const ref = system.spawn(SimpleActor, {});
 
       await expect(
-        ref.call({ method: "unknown", args: [] })
+        ref.call("unknown")
       ).rejects.toThrow("Unknown call method: unknown");
     });
 
@@ -773,12 +761,12 @@ describe("createActor", () => {
           .call("ping", () => "pong");
       });
 
-      const ref = system.spawn(SimpleActor as any, {});
+      const ref = system.spawn(SimpleActor, {});
 
-      ref.cast({ method: "unknown", args: [] });
+      ref.cast("unknown");
 
       await new Promise((r) => setTimeout(r, 50));
-      const result = await ref.call({ method: "ping", args: [] });
+      const result = await ref.call("ping");
       expect(result).toBe("pong");
     });
   });
@@ -792,8 +780,8 @@ describe("createActor", () => {
         });
       });
 
-      const ref = system.spawn(AsyncActor as any, { args: [50] });
-      const result = await ref.call({ method: "asyncOperation", args: [50] });
+      const ref = system.spawn(AsyncActor, { args: [50] });
+      const result = await ref.call("asyncOperation", 50);
       expect(result).toBe("done");
     });
 
@@ -804,9 +792,9 @@ describe("createActor", () => {
         });
       });
 
-      const ref = system.spawn(ErrorActor as any, {});
+      const ref = system.spawn(ErrorActor, {});
 
-      await expect(ref.call({ method: "fail", args: [] })).rejects.toThrow(
+      await expect(ref.call("fail")).rejects.toThrow(
         "intentional error"
       );
     });
@@ -822,20 +810,20 @@ describe("createActor", () => {
       });
 
       const refs = [
-        system.spawn(Counter as any, { args: [0] }),
-        system.spawn(Counter as any, { args: [100] }),
-        system.spawn(Counter as any, { args: [1000] }),
+        system.spawn(Counter, { args: [0] }),
+        system.spawn(Counter, { args: [100] }),
+        system.spawn(Counter, { args: [1000] }),
       ];
 
-      refs[0].cast({ method: "add", args: [1] });
-      refs[1].cast({ method: "add", args: [10] });
-      refs[2].cast({ method: "add", args: [100] });
+      refs[0].cast("add", 1);
+      refs[1].cast("add", 10);
+      refs[2].cast("add", 100);
 
       await new Promise((r) => setTimeout(r, 50));
 
-      expect(await refs[0].call({ method: "get", args: [] })).toBe(1);
-      expect(await refs[1].call({ method: "get", args: [] })).toBe(110);
-      expect(await refs[2].call({ method: "get", args: [] })).toBe(1100);
+      expect(await refs[0].call("get")).toBe(1);
+      expect(await refs[1].call("get")).toBe(110);
+      expect(await refs[2].call("get")).toBe(1100);
     });
   });
 
@@ -867,17 +855,17 @@ describe("createActor", () => {
         });
       });
 
-      const parentRef = system.spawn(Parent as any, {});
+      const parentRef = system.spawn(Parent, {});
 
-      const child1 = await parentRef.call({ method: "spawnChild", args: ["w1"] });
-      const child2 = await parentRef.call({ method: "spawnChild", args: ["w2"] });
-      const child3 = await parentRef.call({ method: "spawnChild", args: ["w3"] });
+      const child1 = await parentRef.call("spawnChild", "w1");
+      const child2 = await parentRef.call("spawnChild", "w2");
+      const child3 = await parentRef.call("spawnChild", "w3");
 
       restartEvents.length = 0;
       terminationEvents.length = 0;
 
       // Crash child2 - with default one-for-one, only child2 should restart
-      child2.cast({ method: "crash", args: [] });
+      child2.cast("crash");
       await new Promise((r) => setTimeout(r, 300));
 
       expect(restartEvents).toContain("init:w2");
@@ -898,16 +886,16 @@ describe("createActor", () => {
           });
       });
 
-      const parentRef = system.spawn(OneForAllParent as any, {});
+      const parentRef = system.spawn(OneForAllParent, {});
 
-      const child1 = await parentRef.call({ method: "spawnChild", args: ["w1"] });
-      await parentRef.call({ method: "spawnChild", args: ["w2"] });
-      await parentRef.call({ method: "spawnChild", args: ["w3"] });
+      const child1 = await parentRef.call("spawnChild", "w1");
+      await parentRef.call("spawnChild", "w2");
+      await parentRef.call("spawnChild", "w3");
 
       restartEvents.length = 0;
       terminationEvents.length = 0;
 
-      child1.cast({ method: "crash", args: [] });
+      child1.cast("crash");
       await new Promise((r) => setTimeout(r, 300));
 
       expect(terminationEvents).toContain("terminate:w1");
@@ -932,16 +920,16 @@ describe("createActor", () => {
           });
       });
 
-      const parentRef = system.spawn(RestForOneParent as any, {});
+      const parentRef = system.spawn(RestForOneParent, {});
 
-      await parentRef.call({ method: "spawnChild", args: ["w1"] });
-      const child2 = await parentRef.call({ method: "spawnChild", args: ["w2"] });
-      await parentRef.call({ method: "spawnChild", args: ["w3"] });
+      await parentRef.call("spawnChild", "w1");
+      const child2 = await parentRef.call("spawnChild", "w2");
+      await parentRef.call("spawnChild", "w3");
 
       restartEvents.length = 0;
       terminationEvents.length = 0;
 
-      child2.cast({ method: "crash", args: [] });
+      child2.cast("crash");
       await new Promise((r) => setTimeout(r, 300));
 
       expect(terminationEvents).toContain("terminate:w2");
@@ -968,7 +956,7 @@ describe("createActor", () => {
             const parentActor = system.system.getActor(ctx.self.id.id);
             if (parentActor && parentActor.context.children.size > 0) {
               const child = Array.from(parentActor.context.children)[0];
-              child.cast({ method: "crash", args: [] });
+              child.cast("crash");
               return true;
             }
             return false;
@@ -979,23 +967,23 @@ describe("createActor", () => {
           });
       });
 
-      const parentRef = system.spawn(LimitedParent as any, {});
-      await parentRef.call({ method: "spawnChild", args: ["doomed"] });
+      const parentRef = system.spawn(LimitedParent, {});
+      await parentRef.call("spawnChild", "doomed");
 
       restartEvents.length = 0;
 
-      await parentRef.call({ method: "crashChild", args: [] });
+      await parentRef.call("crashChild");
       await new Promise((r) => setTimeout(r, 300));
 
-      await parentRef.call({ method: "crashChild", args: [] });
+      await parentRef.call("crashChild");
       await new Promise((r) => setTimeout(r, 300));
 
-      await parentRef.call({ method: "crashChild", args: [] });
+      await parentRef.call("crashChild");
       await new Promise((r) => setTimeout(r, 300));
 
       expect(restartEvents.filter((e) => e === "init:doomed").length).toBe(2);
 
-      const remaining = await parentRef.call({ method: "childCount", args: [] });
+      const remaining = await parentRef.call("childCount");
       expect(remaining).toBe(0);
     });
   });

@@ -1,6 +1,17 @@
 // src/types/functional.ts
 
-import { isInitContinue, type ActorRef, type ChildSupervisionOptions, type InitContinue, type LinkRef, type TimerRef, type WatchRef } from "../actor";
+import {
+  ActorRef,
+  isInitContinue,
+  type Actor,
+  type ActorId,
+  type ChildSupervisionOptions,
+  type InitContinue,
+  type LinkRef,
+  type TimerRef,
+  type WatchRef,
+} from "../actor";
+import type { ActorSystem } from "../actor_system";
 import type { SpawnOptions } from "../actor_system";
 import type { GossipOptions } from "../gossip_protocol";
 import type { SupervisionOptions } from "../supervisor";
@@ -82,29 +93,46 @@ export interface ActorBuilder<
   childSupervision(options: ChildSupervisionOptions): this;
 }
 
-export interface ActorDefinition<
+export type ActorDefinition<
   TArgs extends any[] = any[],
   TCalls extends CallHandlers = {},
   TCasts extends CastHandlers = {},
-> {
+> = (new () => Actor) & {
   __type: "functional-actor";
   factory: (
     ctx: ActorContext,
     self: ActorBuilder<{}, {}>,
     ...args: TArgs
   ) => void | InitContinue | ActorBuilder<TCalls, TCasts>;
-}
+};
 
-export type TypedActorRef<
-  TCalls extends CallHandlers,
-  TCasts extends CastHandlers,
-> = ActorRef & {
-  call<K extends keyof TCalls>(
+const ActorRefBase = ActorRef as new (id: ActorId, system: ActorSystem) => ActorRef;
+
+export class TypedActorRef<
+  TCalls extends CallHandlers = {},
+  TCasts extends CastHandlers = {},
+> extends ActorRefBase {
+  call<K extends keyof TCalls & string>(
     method: K,
     ...args: Parameters<TCalls[K]>
   ): Promise<ReturnType<TCalls[K]>>;
-  cast<K extends keyof TCasts>(
+  call(message: any, timeout?: number): Promise<any>;
+  call(methodOrMessage: any, ...rest: any[]): Promise<any> {
+    if (typeof methodOrMessage === "string") {
+      return super.call({ method: methodOrMessage, args: rest });
+    }
+    return super.call(methodOrMessage, ...rest);
+  }
+
+  cast<K extends keyof TCasts & string>(
     method: K,
     ...args: Parameters<TCasts[K]>
   ): void;
-};
+  cast(message: any): void;
+  cast(methodOrMessage: any, ...rest: any[]): void {
+    if (typeof methodOrMessage === "string") {
+      return super.cast({ method: methodOrMessage, args: rest });
+    }
+    return super.cast(methodOrMessage);
+  }
+}

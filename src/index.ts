@@ -24,7 +24,6 @@ export * from "./heartbeat";
 export * from "./migration";
 export * from "./create_system";
 export * from "./create_actor";
-export * from "./create_actor";
 export {
   LocalConfig,
   DistributedConfig,

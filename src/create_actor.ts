@@ -32,6 +32,11 @@ interface HandlerRegistry {
   childSupervisionConfig?: ChildSupervisionOptions;
 }
 
+type MigratableActor = Actor & {
+  getState?: () => any;
+  setState?: (state: any) => void;
+};
+
 class ActorBuilderImpl implements ActorBuilder {
   private readonly handlers: HandlerRegistry;
 
@@ -131,11 +136,7 @@ function createActorContext(actor: FunctionalContextActor): ActorContext {
       definition: ActorDefinition<TArgs, TCalls, TCasts>,
       options?: SpawnOptions,
     ): TypedActorRef<TCalls, TCasts> {
-      return actor.context.system.spawnChild(
-        actor.self,
-        definition as unknown as new () => Actor,
-        options,
-      ) as TypedActorRef<TCalls, TCasts>;
+      return actor.context.system.spawnChild(actor.self, definition, options);
     },
     watch(ref: ActorRef): WatchRef {
       return actor.context.system.watch(actor.self, ref);
@@ -202,8 +203,9 @@ export function createActor<
       const result = factory(ctx, builder, ...typedArgs);
       if (this.handlers.migratable) {
         const { getState, setState } = this.handlers.migratable;
-        (this as any).getState = getState;
-        (this as any).setState = setState;
+        const migratableActor = this as MigratableActor;
+        migratableActor.getState = getState;
+        migratableActor.setState = setState;
       }
       if (isInitContinue(result)) {
         return result;
@@ -268,8 +270,10 @@ export function createActor<
     }
   }
 
-  (FunctionalActor as any).__type = "functional-actor";
-  (FunctionalActor as any).factory = factory;
+  const definition = Object.assign(FunctionalActor, {
+    __type: "functional-actor" as const,
+    factory,
+  });
 
-  return FunctionalActor as unknown as ActorDefinition<TArgs, TCalls, TCasts>;
+  return definition as ActorDefinition<TArgs, TCalls, TCasts>;
 }
