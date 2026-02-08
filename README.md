@@ -4,6 +4,7 @@ An Erlang/OTP-inspired actor system for TypeScript. Build distributed, fault-tol
 
 ## Features
 
+- **Functional API**: Simple, closure-based actor definitions with `createSystem` and `createActor` (Recommended)
 - **Actor Model**: Lightweight actors with message-passing semantics (`call` for request/response, `cast` for fire-and-forget)
 - **Location Transparency**: Actors communicate via `ActorRef` regardless of whether the target is local or remote
 - **Supervision**: Automatic crash handling with configurable restart strategies
@@ -76,9 +77,39 @@ pnpm add libeam
 
 ## Quick Start
 
-### Defining Actors
+### Functional API (Recommended)
 
-Extend the `Actor` class and implement message handlers:
+The functional API provides a simple, closure-based approach to defining actors:
+
+```typescript
+import { createSystem, createActor } from "libeam";
+
+// Define an actor with closure-based state
+const Counter = createActor((ctx, self, initialValue: number) => {
+  let count = initialValue;
+
+  self
+    .call("get", () => count)
+    .call("increment", () => ++count)
+    .cast("set", (value: number) => { count = value; });
+});
+
+// Create a system (one line!)
+const system = createSystem();
+
+// Spawn and interact with typed refs
+const counter = system.spawn(Counter, { args: [0] });
+
+const value = await counter.call("get");     // 0 — fully typed!
+await counter.call("increment");              // 1
+counter.cast("set", 100);                     // fire-and-forget
+
+await system.shutdown();
+```
+
+### Class-Based API
+
+For full control, extend the `Actor` class directly:
 
 ```typescript
 import { Actor, ActorRef } from "libeam";
@@ -246,7 +277,110 @@ const node2 = await startNode({
 });
 ```
 
-## API Reference
+## Functional API
+
+The functional API is the recommended way to build applications with libeam. It provides better type safety, less boilerplate, and a more modern developer experience.
+
+### createSystem
+
+The `createSystem` factory simplifies system creation and configuration.
+
+```typescript
+import { createSystem } from "libeam";
+
+// Local system (synchronous, zero config)
+const system = createSystem();
+
+// Local with options
+const system = createSystem({ nodeId: "my-node" });
+
+// Distributed (async, with ZeroMQ + Gossip)
+const system = await createSystem({
+  type: "distributed",
+  port: 5000,
+  seedNodes: ["127.0.0.1:6002"],
+});
+```
+
+**System Interface:**
+
+- `spawn(actorClass, options?)`: Spawn an actor and return a `TypedActorRef`
+- `register(actorClass)`: Register an actor class for remote spawning
+- `shutdown()`: Gracefully shut down the system and all actors
+- `nodeId`: The unique ID of this node
+- `transport`: Access to the underlying transport layer
+- `cluster`: Access to the cluster membership interface
+- `registry`: Access to the actor registry
+- `system`: Escape hatch to the raw `ActorSystem` instance
+
+### createActor
+
+Define actors using a closure-based factory function.
+
+```typescript
+const MyActor = createActor((ctx, self, ...args) => {
+  // Initialization logic here
+  
+  self.call("ping", () => "pong");
+});
+```
+
+The factory function receives:
+- `ctx`: The actor context (spawn, watch, link, stash, etc.)
+- `self`: The actor builder (register handlers, timers, etc.)
+- `...args`: Arguments passed during `spawn`
+
+**ActorContext (ctx) Methods:**
+- `self`: Reference to this actor
+- `parent`: Reference to the parent actor
+- `spawn(actor, options?)`: Spawn a child actor
+- `watch(ref)` / `unwatch(ref)`: Monitor other actors
+- `link(ref)` / `unlink(ref)`: Bidirectional crash propagation
+- `exit(reason?)`: Stop this actor (with optional reason)
+- `setTrapExit(boolean)`: Enable/disable exit trapping
+- `stash()` / `unstash()` / `unstashAll()` / `clearStash()`: Message stashing
+
+**ActorBuilder (self) Methods:**
+- `call(name, handler)`: Register a request-reply handler
+- `cast(name, handler)`: Register a fire-and-forget handler
+- `info(type, handler)`: Register a handler for system messages (`"down"`, `"exit"`, `"timeout"`, `"moved"`)
+- `onTerminate(handler)`: Cleanup logic
+- `onContinue(handler)`: Deferred initialization
+- `sendAfter(msg, delay)` / `sendInterval(msg, interval)`: Timers
+- `setIdleTimeout(ms)`: Configure idle timeout
+- `migratable({ getState, setState })`: Enable actor migration
+- `childSupervision(options)`: Configure supervision strategy for children
+
+### TypedActorRef
+
+When you spawn an actor created with `createActor`, you get a `TypedActorRef`. This provides full TypeScript autocompletion and type checking for `call` and `cast`.
+
+```typescript
+const counter = system.spawn(Counter, { args: [0] });
+
+// TypeScript knows "get" and "increment" are valid calls
+const value = await counter.call("get");
+await counter.call("increment");
+
+// TypeScript knows "set" is a valid cast and requires a number
+counter.cast("set", 42);
+```
+
+### Feature Comparison
+
+| Feature | Functional API | Class-Based API |
+|---------|---------------|-----------------|
+| State management | Closures | Class fields |
+| Message handlers | `self.call()` / `self.cast()` | `handleCall()` / `handleCast()` |
+| Type safety | Automatic (TypedActorRef) | Manual typing |
+| System setup | `createSystem()` | Manual wiring |
+| Child supervision | `self.childSupervision()` | `childSupervision()` override |
+| Deferred init | `self.onContinue()` | `handleContinue()` override |
+| Message stashing | `ctx.stash()` / `ctx.unstashAll()` | `this.stash()` / `this.unstashAll()` |
+
+## Class-Based API Reference
+
+This section documents the low-level, class-based API. While the Functional API is recommended for most use cases, the class-based API provides full control and is used internally by the system.
 
 ### Actor
 
@@ -292,7 +426,7 @@ class DatabaseActor extends Actor {
 }
 ```
 
-See `examples/handle_continue.ts` for more examples.
+See `examples/high-level/handle_continue.ts` and `examples/low-level/handle_continue.ts` for more examples.
 
 ### Idle Timeout
 
@@ -321,7 +455,7 @@ class SessionActor extends Actor {
 
 The actor receives a `TimeoutMessage` via `handleInfo()` when the timeout fires.
 
-See `test/idle_timeout.test.ts` for more examples.
+See `examples/high-level/idle_timeout.ts` and `test/idle_timeout.test.ts` for more examples.
 
 ### Timers
 
@@ -362,7 +496,7 @@ class ReminderActor extends Actor {
 - `cancelTimer(timerRef): boolean` - Cancel a specific timer
 - `cancelAllTimers(): void` - Cancel all active timers
 
-See `examples/timers.ts` for more examples.
+See `examples/high-level/timers.ts` and `examples/low-level/timers.ts` for more examples.
 
 ### Watching
 
@@ -399,7 +533,7 @@ class WorkerSupervisor extends Actor {
 - Auto-cleanup: The watch is automatically removed after the DOWN message is delivered
 - Works across nodes: Can watch actors on remote nodes
 
-See `examples/actor_watching.ts` for more examples.
+See `examples/high-level/watching.ts` and `examples/low-level/actor_watching.ts` for more examples.
 
 ### Links
 
@@ -447,7 +581,7 @@ class ParentActor extends Actor {
 - `"kill"` - Always terminates, ignores trapExit
 - Custom string - Delivered to linked actors with trapExit enabled
 
-See `examples/actor_links.ts` for more examples.
+See `examples/high-level/links.ts` and `examples/low-level/actor_links.ts` for more examples.
 
 ### Message Stashing
 
@@ -492,7 +626,7 @@ class StatefulActor extends Actor {
 - `unstashAll(): void` - Replay all stashed messages
 - `clearStash(): void` - Discard all stashed messages
 
-See `test/message_stashing.test.ts` for more examples.
+See `examples/high-level/message_stashing.ts` and `test/message_stashing.test.ts` for more examples.
 
 ### InfoMessage Types
 
@@ -858,7 +992,53 @@ interface Transport {
 
 ## Example: Chat Application
 
-A complete example showing actors communicating across nodes:
+A complete example showing actors communicating across nodes.
+
+### Functional API (Recommended)
+
+```typescript
+import { createSystem, createActor, ActorRef } from "libeam";
+
+const ChatRoom = createActor((ctx, self) => {
+  const participants = new Map<string, ActorRef>();
+
+  self
+    .call("getParticipants", () => Array.from(participants.keys()))
+    .cast("join", (name: string, ref: ActorRef) => {
+      participants.set(name, ref);
+      broadcast(`${name} joined the chat`);
+    })
+    .cast("message", (from: string, text: string) => {
+      broadcast(`[${from}] ${text}`);
+    });
+
+  function broadcast(text: string) {
+    for (const ref of participants.values()) {
+      ref.cast({ method: "notify", args: [text] });
+    }
+  }
+});
+
+const User = createActor((ctx, self, name: string, roomRef: ActorRef) => {
+  // Join room on init (roomRef is untyped, so use raw message format)
+  roomRef.cast({ method: "join", args: [name, ctx.self] });
+
+  self.cast("notify", (text: string) => {
+    console.log(`[${name}] ${text}`);
+  });
+});
+
+// Usage:
+const system = createSystem();
+const room = system.spawn(ChatRoom);
+system.spawn(User, { args: ["Alice", room] });
+system.spawn(User, { args: ["Bob", room] });
+
+// TypedActorRef — typed call/cast works directly on room
+const members = await room.call("getParticipants"); // ["Alice", "Bob"]
+```
+
+### Class-Based API
 
 ```typescript
 import {
@@ -915,7 +1095,21 @@ pnpm example:chat
 
 ## Graceful Shutdown
 
-Proper shutdown ensures actors terminate cleanly and cluster peers are notified:
+Proper shutdown ensures actors terminate cleanly and cluster peers are notified.
+
+### Functional API (Recommended)
+
+When using `createSystem`, a single call handles the entire shutdown sequence:
+
+```typescript
+const system = createSystem();
+// ... spawn actors ...
+await system.shutdown(); // Terminates actors, leaves cluster, disconnects transport
+```
+
+### Class-Based API
+
+When manually wiring components, you must shut them down in order:
 
 ```typescript
 async function shutdownNode(system, cluster, transport) {
@@ -1215,7 +1409,7 @@ class ObserverActor extends Actor {
 Run the migration example:
 
 ```bash
-npx ts-node examples/actor_migration.ts
+npx ts-node examples/low-level/actor_migration.ts
 ```
 
 ## Architecture
