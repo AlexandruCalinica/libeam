@@ -11,9 +11,9 @@ const Database = createActor((ctx, self) => {
   let connected = false;
   let queryCount = 0;
   console.log("[Database] Starting connection...");
-  self
-    .call("status", () => ({ connected, queryCount }))
-    .cast("query", (sql: string) => {
+  return self
+    .onCall("status", () => ({ connected, queryCount }))
+    .onCast("query", (sql: string) => {
       if (!connected) {
         console.log(`[Database] Not connected, stashing: "${sql}"`);
         ctx.stash();
@@ -22,7 +22,7 @@ const Database = createActor((ctx, self) => {
       queryCount++;
       console.log(`[Database] Executing #${queryCount}: "${sql}"`);
     })
-    .cast("connect", async () => {
+    .onCast("connect", async () => {
       await delay(200);
       connected = true;
       console.log("[Database] Connected! Replaying stashed...");
@@ -33,9 +33,9 @@ const OrderProcessor = createActor((ctx, self) => {
   let state: "pending" | "processing" | "shipped" | "cancelled" = "pending";
   const items: string[] = [];
   console.log("[Order] Created in pending state");
-  self
-    .call("status", () => ({ state, items: [...items] }))
-    .cast("add_item", (item: string) => {
+  return self
+    .onCall("status", () => ({ state, items: [...items] }))
+    .onCast("add_item", (item: string) => {
       if (state !== "pending") {
         console.log(`[Order] Can't add in ${state} state, stashing`);
         ctx.stash();
@@ -44,12 +44,12 @@ const OrderProcessor = createActor((ctx, self) => {
       items.push(item);
       console.log(`[Order] Added: ${item} (total: ${items.length})`);
     })
-    .cast("start_processing", () => {
+    .onCast("start_processing", () => {
       if (state !== "pending") return;
       state = "processing";
       console.log(`[Order] Processing ${items.length} items`);
     })
-    .cast("ship", () => {
+    .onCast("ship", () => {
       if (state !== "processing") {
         console.log(`[Order] Can't ship in ${state} state, stashing`);
         ctx.stash();
@@ -58,13 +58,13 @@ const OrderProcessor = createActor((ctx, self) => {
       state = "shipped";
       console.log(`[Order] Shipped: ${items.join(", ")}`);
     })
-    .cast("cancel", () => {
+    .onCast("cancel", () => {
       if (state === "shipped") return;
       state = "cancelled";
       console.log("[Order] Cancelled — clearing stash");
       ctx.clearStash();
     })
-    .cast("reopen", () => {
+    .onCast("reopen", () => {
       if (state !== "cancelled") return;
       state = "pending";
       items.length = 0;
@@ -76,9 +76,9 @@ const RateLimitedWorker = createActor((ctx, self) => {
   let busy = false;
   const processed: string[] = [];
   console.log("[Worker] Ready (one request at a time)");
-  self
-    .call("getProcessed", () => [...processed])
-    .cast("request", async (id: string) => {
+  return self
+    .onCall("getProcessed", () => [...processed])
+    .onCast("request", async (id: string) => {
       if (busy) {
         console.log(`[Worker] Busy, stashing: "${id}"`);
         ctx.stash();

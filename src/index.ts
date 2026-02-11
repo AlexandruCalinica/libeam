@@ -29,8 +29,12 @@ export {
   DistributedConfig,
   SupervisionConfig,
   GossipConfig,
+  ActorRegistry,
   ActorBuilder,
   ActorDefinition,
+  ExtractCalls,
+  ExtractCasts,
+  ActorRefFrom,
   TypedActorRef,
   ActorContext,
 } from "./types/functional";

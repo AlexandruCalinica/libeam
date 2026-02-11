@@ -31,6 +31,17 @@ type ExtendHandlers<
 export type SupervisionConfig = SupervisionOptions;
 export type GossipConfig = GossipOptions;
 
+// Module augmentation interface - users extend this in their own .d.ts files
+// eslint-disable-next-line @typescript-eslint/no-empty-interface
+export interface ActorRegistry {}
+
+// Utility types for extracting handler types from ActorDefinition
+export type ExtractCalls<T> = T extends ActorDefinition<any, infer TCalls, any> ? TCalls : {};
+export type ExtractCasts<T> = T extends ActorDefinition<any, any, infer TCasts> ? TCasts : {};
+export type ActorRefFrom<T> = T extends ActorDefinition<any, infer TCalls, infer TCasts>
+  ? TypedActorRef<TCalls, TCasts>
+  : ActorRef;
+
 export interface LocalConfig {
   type?: "local";
   nodeId?: string;
@@ -65,6 +76,10 @@ export interface ActorContext {
   unlink(ref: LinkRef): void;
   exit(reason?: string): void;
   setTrapExit(trap: boolean): void;
+  getActorByName<K extends keyof ActorRegistry & string>(
+    name: K,
+  ): Promise<ActorRefFrom<ActorRegistry[K]> | null>;
+  getActorByName(name: string): Promise<ActorRef | null>;
   stash(): void;
   unstash(): void;
   unstashAll(): void;
@@ -75,20 +90,20 @@ export interface ActorBuilder<
   TCalls extends CallHandlers = {},
   TCasts extends CastHandlers = {},
 > {
-  call<K extends string, THandler extends (...args: any[]) => any>(
+  onCall<K extends string, THandler extends (...args: any[]) => any>(
     name: K,
     handler: THandler,
   ): this & ActorBuilder<ExtendHandlers<TCalls, K, THandler>, TCasts>;
-  cast<K extends string, THandler extends (...args: any[]) => void>(
+  onCast<K extends string, THandler extends (...args: any[]) => void>(
     name: K,
     handler: THandler,
   ): this & ActorBuilder<TCalls, ExtendHandlers<TCasts, K, THandler>>;
-  info<T extends string>(type: T, handler: (msg: any) => void): this;
+  onInfo<T extends string>(type: T, handler: (msg: any) => void): this;
   onTerminate(handler: () => void): this;
   onContinue<T>(handler: (data: T) => void | Promise<void>): this;
   sendAfter(message: any, delayMs: number): TimerRef;
   sendInterval(message: any, intervalMs: number): TimerRef;
-  setIdleTimeout(timeoutMs: number): void;
+  setIdleTimeout(timeoutMs: number): this;
   migratable(config: { getState: () => any; setState: (state: any) => void }): this;
   childSupervision(options: ChildSupervisionOptions): this;
 }
@@ -116,6 +131,10 @@ export class TypedActorRef<
     method: K,
     ...args: Parameters<TCalls[K]>
   ): Promise<ReturnType<TCalls[K]>>;
+  call(
+    method: keyof TCalls extends never ? string : never,
+    ...args: any[]
+  ): Promise<any>;
   call(message: any, timeout?: number): Promise<any>;
   call(methodOrMessage: any, ...rest: any[]): Promise<any> {
     if (typeof methodOrMessage === "string") {
@@ -127,6 +146,10 @@ export class TypedActorRef<
   cast<K extends keyof TCasts & string>(
     method: K,
     ...args: Parameters<TCasts[K]>
+  ): void;
+  cast(
+    method: keyof TCasts extends never ? string : never,
+    ...args: any[]
   ): void;
   cast(message: any): void;
   cast(methodOrMessage: any, ...rest: any[]): void {

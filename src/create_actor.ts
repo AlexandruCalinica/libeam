@@ -53,7 +53,7 @@ class ActorBuilderImpl implements ActorBuilder {
     return this.handlers;
   }
 
-  call<K extends string, THandler extends (...args: any[]) => any>(
+  onCall<K extends string, THandler extends (...args: any[]) => any>(
     name: K,
     handler: THandler,
   ): this {
@@ -61,7 +61,7 @@ class ActorBuilderImpl implements ActorBuilder {
     return this;
   }
 
-  cast<K extends string, THandler extends (...args: any[]) => void>(
+  onCast<K extends string, THandler extends (...args: any[]) => void>(
     name: K,
     handler: THandler,
   ): this {
@@ -69,7 +69,7 @@ class ActorBuilderImpl implements ActorBuilder {
     return this;
   }
 
-  info<T extends string>(type: T, handler: (msg: any) => void): this {
+  onInfo<T extends string>(type: T, handler: (msg: any) => void): this {
     this.handlers.infos.set(type, handler);
     return this;
   }
@@ -166,6 +166,9 @@ function createActorContext(actor: FunctionalContextActor): ActorContext {
     setTrapExit(trap: boolean): void {
       actor.context.trapExit = trap;
     },
+    getActorByName(name: string): Promise<ActorRef | null> {
+      return actor.context.system.getActorByName(name);
+    },
     stash(): void {
       actor.publicStash();
     },
@@ -181,6 +184,29 @@ function createActorContext(actor: FunctionalContextActor): ActorContext {
   };
 }
 
+// Overload 1: Factory returns ActorBuilder -> infer TCalls/TCasts
+export function createActor<
+  TArgs extends any[],
+  TCalls extends CallHandlers,
+  TCasts extends CastHandlers,
+>(
+  factory: (
+    ctx: ActorContext,
+    self: ActorBuilder<{}, {}>,
+    ...args: TArgs
+  ) => ActorBuilder<TCalls, TCasts>,
+): ActorDefinition<TArgs, TCalls, TCasts>;
+
+// Overload 2: Factory returns void or InitContinue -> no inference
+export function createActor<TArgs extends any[]>(
+  factory: (
+    ctx: ActorContext,
+    self: ActorBuilder<{}, {}>,
+    ...args: TArgs
+  ) => void | InitContinue,
+): ActorDefinition<TArgs, {}, {}>;
+
+// Implementation signature
 export function createActor<
   TArgs extends any[],
   TCalls extends CallHandlers = CallHandlers,

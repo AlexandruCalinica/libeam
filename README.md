@@ -88,10 +88,10 @@ import { createSystem, createActor } from "libeam";
 const Counter = createActor((ctx, self, initialValue: number) => {
   let count = initialValue;
 
-  self
-    .call("get", () => count)
-    .call("increment", () => ++count)
-    .cast("set", (value: number) => { count = value; });
+  return self
+    .onCall("get", () => count)
+    .onCall("increment", () => ++count)
+    .onCast("set", (value: number) => { count = value; });
 });
 
 // Create a system (one line!)
@@ -185,9 +185,74 @@ async function main() {
 main();
 ```
 
-### Multi-Node Setup (ZeroMQ + Gossip)
+### Multi-Node Setup (Functional API)
 
-For distributed applications across multiple processes/machines:
+For distributed applications across multiple processes/machines, `createSystem` handles all the wiring — ZeroMQ transport, gossip protocol, cluster membership, and registry sync:
+
+```typescript
+import { createSystem, createActor, ActorRegistry } from "libeam";
+
+// Define actors
+const Ping = createActor((ctx, self) => {
+  return self.onCast("ping", async (n: number) => {
+    console.log(`Ping received: ${n}`);
+    const pong = await ctx.getActorByName("pong");
+    if (pong) pong.cast("pong", n + 1);
+  });
+});
+
+const Pong = createActor((ctx, self) => {
+  return self.onCast("pong", async (n: number) => {
+    console.log(`Pong received: ${n}`);
+    const ping = await ctx.getActorByName("ping");
+    if (ping) ping.cast("ping", n + 1);
+  });
+});
+
+// Register actors for typed getActorByName — same codebase on all nodes
+declare module "libeam" {
+  interface ActorRegistry {
+    ping: typeof Ping;
+    pong: typeof Pong;
+  }
+}
+
+// Node 1 — port convention: rpc=5000, pub=5001, gossip=5002
+const system1 = await createSystem({
+  type: "distributed",
+  port: 5000,
+  seedNodes: [],
+});
+const ping = system1.spawn(Ping, { name: "ping" });
+
+// Node 2 — joins via node1's gossip port
+const system2 = await createSystem({
+  type: "distributed",
+  port: 5010,
+  seedNodes: ["127.0.0.1:5002"],
+});
+system2.spawn(Pong, { name: "pong" });
+
+// Start the game — typed ref from spawn() supports clean syntax
+ping.cast("ping", 0);
+```
+
+Run the full distributed example:
+
+```bash
+# Terminal 1
+npx tsx examples/high-level/distributed.ts node1
+
+# Terminal 2
+npx tsx examples/high-level/distributed.ts node2
+```
+
+### Multi-Node Setup (Class-Based API)
+
+For full control over transport, gossip, and cluster configuration:
+
+<details>
+<summary>Manual wiring example</summary>
 
 ```typescript
 import {
@@ -277,6 +342,8 @@ const node2 = await startNode({
 });
 ```
 
+</details>
+
 ## Functional API
 
 The functional API is the recommended way to build applications with libeam. It provides better type safety, less boilerplate, and a more modern developer experience.
@@ -306,6 +373,7 @@ const system = await createSystem({
 
 - `spawn(actorClass, options?)`: Spawn an actor and return a `TypedActorRef`
 - `register(actorClass)`: Register an actor class for remote spawning
+- `getActorByName(name)`: Look up a named actor (local or remote)
 - `shutdown()`: Gracefully shut down the system and all actors
 - `nodeId`: The unique ID of this node
 - `transport`: Access to the underlying transport layer
@@ -321,7 +389,7 @@ Define actors using a closure-based factory function.
 const MyActor = createActor((ctx, self, ...args) => {
   // Initialization logic here
   
-  self.call("ping", () => "pong");
+  return self.onCall("ping", () => "pong");
 });
 ```
 
@@ -338,12 +406,13 @@ The factory function receives:
 - `link(ref)` / `unlink(ref)`: Bidirectional crash propagation
 - `exit(reason?)`: Stop this actor (with optional reason)
 - `setTrapExit(boolean)`: Enable/disable exit trapping
+- `getActorByName(name)`: Look up a named actor (local or remote)
 - `stash()` / `unstash()` / `unstashAll()` / `clearStash()`: Message stashing
 
 **ActorBuilder (self) Methods:**
-- `call(name, handler)`: Register a request-reply handler
-- `cast(name, handler)`: Register a fire-and-forget handler
-- `info(type, handler)`: Register a handler for system messages (`"down"`, `"exit"`, `"timeout"`, `"moved"`)
+- `onCall(name, handler)`: Register a request-reply handler
+- `onCast(name, handler)`: Register a fire-and-forget handler
+- `onInfo(type, handler)`: Register a handler for system messages (`"down"`, `"exit"`, `"timeout"`, `"moved"`)
 - `onTerminate(handler)`: Cleanup logic
 - `onContinue(handler)`: Deferred initialization
 - `sendAfter(msg, delay)` / `sendInterval(msg, interval)`: Timers
@@ -366,12 +435,91 @@ await counter.call("increment");
 counter.cast("set", 42);
 ```
 
+### Type Inference
+
+When you `return` the builder chain from a `createActor` factory, TypeScript automatically infers the handler types:
+
+```typescript
+// With return — full type inference
+const Counter = createActor((ctx, self, initial: number) => {
+  let count = initial;
+  return self
+    .onCall("get", () => count)
+    .onCall("increment", () => ++count)
+    .onCast("set", (v: number) => { count = v; });
+});
+
+const counter = system.spawn(Counter, { args: [0] });
+counter.call("get");        // TypeScript knows this returns number
+counter.cast("set", 42);    // TypeScript knows "set" expects a number
+counter.call("typo");       // Type error! "typo" is not a valid method
+```
+
+Without `return`, the factory still works but handlers are untyped:
+
+```typescript
+// Without return — still works, but no type inference
+const Untyped = createActor((ctx, self) => {
+  self.onCall("get", () => 42);
+});
+```
+
+**Timer methods** (`sendAfter`, `sendInterval`) return `TimerRef`, not the builder, so they must be called on a separate line before the `return`:
+
+```typescript
+const Heartbeat = createActor((ctx, self) => {
+  self.sendInterval({ type: "tick" }, 1000);  // separate line (returns TimerRef)
+  return self
+    .onCast("tick", () => console.log("tick"))
+    .onTerminate(() => console.log("stopped"));
+});
+```
+
+### Module Augmentation (Typed `getActorByName`)
+
+By default, `getActorByName` returns an untyped `ActorRef`. To get fully typed refs, augment the `ActorRegistry` interface:
+
+```typescript
+// types.d.ts (or any .ts file)
+import "libeam";
+
+declare module "libeam" {
+  interface ActorRegistry {
+    counter: typeof Counter;
+    "chat-room": typeof ChatRoom;
+  }
+}
+```
+
+Now `getActorByName` returns typed refs when called with registered names:
+
+```typescript
+const counter = await system.getActorByName("counter");
+if (counter) {
+  const value = await counter.call("get");  // fully typed!
+  counter.cast("set", 100);                 // fully typed!
+}
+```
+
+**Utility types** for working with actor definitions:
+
+- `ActorRefFrom<T>` — Extract `TypedActorRef` from an `ActorDefinition`
+- `ExtractCalls<T>` — Extract call handler types from an `ActorDefinition`
+- `ExtractCasts<T>` — Extract cast handler types from an `ActorDefinition`
+
+```typescript
+import { ActorRefFrom } from "libeam";
+
+type CounterRef = ActorRefFrom<typeof Counter>;
+// TypedActorRef<{ get: () => number; increment: () => number }, { set: (v: number) => void }>
+```
+
 ### Feature Comparison
 
 | Feature | Functional API | Class-Based API |
 |---------|---------------|-----------------|
 | State management | Closures | Class fields |
-| Message handlers | `self.call()` / `self.cast()` | `handleCall()` / `handleCast()` |
+| Message handlers | `self.onCall()` / `self.onCast()` | `handleCall()` / `handleCast()` |
 | Type safety | Automatic (TypedActorRef) | Manual typing |
 | System setup | `createSystem()` | Manual wiring |
 | Child supervision | `self.childSupervision()` | `childSupervision()` override |
@@ -1002,13 +1150,13 @@ import { createSystem, createActor, ActorRef } from "libeam";
 const ChatRoom = createActor((ctx, self) => {
   const participants = new Map<string, ActorRef>();
 
-  self
-    .call("getParticipants", () => Array.from(participants.keys()))
-    .cast("join", (name: string, ref: ActorRef) => {
+  return self
+    .onCall("getParticipants", () => Array.from(participants.keys()))
+    .onCast("join", (name: string, ref: ActorRef) => {
       participants.set(name, ref);
       broadcast(`${name} joined the chat`);
     })
-    .cast("message", (from: string, text: string) => {
+    .onCast("message", (from: string, text: string) => {
       broadcast(`[${from}] ${text}`);
     });
 
@@ -1023,7 +1171,7 @@ const User = createActor((ctx, self, name: string, roomRef: ActorRef) => {
   // Join room on init (roomRef is untyped, so use raw message format)
   roomRef.cast({ method: "join", args: [name, ctx.self] });
 
-  self.cast("notify", (text: string) => {
+  return self.onCast("notify", (text: string) => {
     console.log(`[${name}] ${text}`);
   });
 });

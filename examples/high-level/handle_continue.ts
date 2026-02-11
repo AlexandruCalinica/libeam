@@ -30,8 +30,8 @@ const UserSession = createActor((ctx, self, userId: string) => {
       ready = true;
       console.log(`[Session:${data.userId}] onContinue() — ready! User: ${user.name}`);
     })
-    .call("isReady", () => ready)
-    .call("getUser", () => user)
+    .onCall("isReady", () => ready)
+    .onCall("getUser", () => user)
     .onTerminate(() => console.log(`[Session:${userId}] Terminated`));
 
   return { continue: { userId } };
@@ -54,8 +54,8 @@ const ConfigManager = createActor((ctx, self) => {
       sources = data.sources;
       console.log("[ConfigManager] onContinue() — all configs loaded!");
     })
-    .call("getConfig", () => config)
-    .call("getSources", () => sources)
+    .onCall("getConfig", () => config)
+    .onCall("getSources", () => sources)
     .onTerminate(() => console.log("[ConfigManager] Terminated"));
 
   return { continue: { sources: ["database", "remote", "environment"] } };
@@ -78,8 +78,8 @@ const Service = createActor((ctx, self) => {
       status = "ready";
       console.log("[Service] onContinue() — all connections established!");
     })
-    .call("getStatus", () => status)
-    .call("getConnections", () => [...connections])
+    .onCall("getStatus", () => status)
+    .onCall("getConnections", () => [...connections])
     .onTerminate(() => console.log("[Service] Terminated"));
 
   return { continue: { endpoints: ["api.example.com", "db.example.com", "cache.example.com"] } };

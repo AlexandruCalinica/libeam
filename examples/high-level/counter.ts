@@ -6,7 +6,7 @@
 // This example shows:
 // - createSystem() for minimal system setup
 // - createActor() with closure-based state
-// - Chainable handler registration: self.call().cast()
+// - Chainable handler registration: self.onCall().onCast()
 // - Type-safe call (request-reply) and cast (fire-and-forget)
 
 import { createSystem, createActor } from "../../src";
@@ -16,26 +16,26 @@ import { createSystem, createActor } from "../../src";
 const Counter = createActor((ctx, self, initialValue: number) => {
   let count = initialValue;
 
-  self
-    .call("get", () => count)
-    .call("inc", (n: number = 1) => {
+  return self
+    .onCall("get", () => count)
+    .onCall("inc", (n: number = 1) => {
       count += n;
       return count;
     })
-    .call("dec", (n: number = 1) => {
+    .onCall("dec", (n: number = 1) => {
       count -= n;
       return count;
     })
-    .call("getAndReset", () => {
+    .onCall("getAndReset", () => {
       const value = count;
       count = initialValue;
       return value;
     })
-    .cast("set", (value: number) => {
+    .onCast("set", (value: number) => {
       count = value;
       console.log(`  [Counter] Set to ${count}`);
     })
-    .cast("reset", () => {
+    .onCast("reset", () => {
       count = initialValue;
       console.log(`  [Counter] Reset to ${count}`);
     });

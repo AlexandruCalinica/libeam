@@ -11,7 +11,7 @@ Examples are organized into two categories based on API complexity:
 High-level examples use the functional API for simpler, more concise code:
 - Uses `createSystem()` and `createActor()` functions
 - Closure-based actors with implicit state
-- Chainable handler registration: `self.call().cast()`
+- Chainable handler registration: `self.onCall().onCast()`
 - Best for: Learning the basics, simple use cases, quick prototypes
 
 **Run:** `npx tsx examples/high-level/<name>.ts`
@@ -217,3 +217,4 @@ main().catch(console.error);
 | `high-level/idle_timeout.ts` | Basic | Idle timeout with functional API |
 | `high-level/handle_continue.ts` | Basic | Async initialization with functional API |
 | `high-level/message_stashing.ts` | Intermediate | Message stashing with functional API |
+| `high-level/distributed.ts` | Advanced | Distributed actors via createSystem() |

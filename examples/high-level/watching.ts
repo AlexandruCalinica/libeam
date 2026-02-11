@@ -10,8 +10,8 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const Worker = createActor((ctx, self, name: string) => {
   console.log(`  [${name}] Started`);
 
-  self
-    .call("ping", () => `${name} pong`)
+  return self
+    .onCall("ping", () => `${name} pong`)
     .onTerminate(() => {
       console.log(`  [${name}] Terminated`);
     });
@@ -23,15 +23,15 @@ const Monitor = createActor((ctx, self) => {
 
   console.log("  [Monitor] Started");
 
-  self
-    .call("getLog", () => [...terminationLog])
-    .call("getWatchCount", () => watched.size)
-    .cast("watch", (name: string, ref: ActorRef) => {
+  return self
+    .onCall("getLog", () => [...terminationLog])
+    .onCall("getWatchCount", () => watched.size)
+    .onCast("watch", (name: string, ref: ActorRef) => {
       const watchRef = ctx.watch(ref);
       watched.set(ref.id.id, { name, watchRef });
       console.log(`  [Monitor] Now watching: ${name}`);
     })
-    .cast("unwatch", (ref: ActorRef) => {
+    .onCast("unwatch", (ref: ActorRef) => {
       const entry = watched.get(ref.id.id);
       if (entry) {
         ctx.unwatch(entry.watchRef);
@@ -39,7 +39,7 @@ const Monitor = createActor((ctx, self) => {
         console.log(`  [Monitor] Unwatched: ${entry.name}`);
       }
     })
-    .info("down", (msg: DownMessage) => {
+    .onInfo("down", (msg: DownMessage) => {
       const entry = watched.get(msg.actorRef.id.id);
       const name = entry?.name || "unknown";
       const reason = msg.reason.type;
@@ -55,14 +55,14 @@ const ServiceRegistry = createActor((ctx, self) => {
 
   console.log("  [Registry] Started");
 
-  self
-    .call("list", () => Array.from(services.keys()))
-    .cast("register", (name: string, ref: ActorRef) => {
+  return self
+    .onCall("list", () => Array.from(services.keys()))
+    .onCast("register", (name: string, ref: ActorRef) => {
       ctx.watch(ref);
       services.set(name, ref);
       console.log(`  [Registry] Registered: "${name}"`);
     })
-    .info("down", (msg: DownMessage) => {
+    .onInfo("down", (msg: DownMessage) => {
       for (const [name, ref] of services.entries()) {
         if (ref.id.id === msg.actorRef.id.id) {
           services.delete(name);

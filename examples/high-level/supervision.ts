@@ -11,13 +11,13 @@ const Worker = createActor((ctx, self, name: string) => {
   let workCount = 0;
   console.log(`  [${name}] Started (new instance)`);
 
-  self
-    .call("status", () => ({ name, workCount }))
-    .cast("work", () => {
+  return self
+    .onCall("status", () => ({ name, workCount }))
+    .onCast("work", () => {
       workCount++;
       console.log(`  [${name}] Did work #${workCount}`);
     })
-    .cast("crash", () => {
+    .onCast("crash", () => {
       console.log(`  [${name}] Crashing!`);
       throw new Error(`${name} crashed`);
     })
@@ -26,22 +26,22 @@ const Worker = createActor((ctx, self, name: string) => {
 
 const OneForOneSupervisor = createActor((ctx, self) => {
   console.log("[OneForOne Supervisor] Started");
-  self.childSupervision({
+  return self.childSupervision({
     strategy: "one-for-one",
     maxRestarts: 3,
     periodMs: 5000,
   });
-  self.call("spawn", (name: string) => ctx.spawn(Worker, { args: [name] }));
+  self.onCall("spawn", (name: string) => ctx.spawn(Worker, { args: [name] }));
 });
 
 const OneForAllSupervisor = createActor((ctx, self) => {
   console.log("[OneForAll Supervisor] Started");
-  self.childSupervision({
+  return self.childSupervision({
     strategy: "one-for-all",
     maxRestarts: 3,
     periodMs: 5000,
   });
-  self.call("spawn", (name: string) => ctx.spawn(Worker, { args: [name] }));
+  self.onCall("spawn", (name: string) => ctx.spawn(Worker, { args: [name] }));
 });
 
 async function main() {
@@ -91,15 +91,15 @@ async function main() {
     console.log("\n--- Demo 3: Max Restart Limit ---");
     console.log("Child stopped permanently after exceeding restart limit.\n");
 
-    const LimitedSupervisor = createActor((ctx, self) => {
-      console.log("[Limited Supervisor] Started (max 2 restarts)");
-      self.childSupervision({
-        strategy: "one-for-one",
-        maxRestarts: 2,
-        periodMs: 5000,
-      });
-      self.call("spawn", (name: string) => ctx.spawn(Worker, { args: [name] }));
-    });
+     const LimitedSupervisor = createActor((ctx, self) => {
+       console.log("[Limited Supervisor] Started (max 2 restarts)");
+       return self.childSupervision({
+         strategy: "one-for-one",
+         maxRestarts: 2,
+         periodMs: 5000,
+       });
+       self.onCall("spawn", (name: string) => ctx.spawn(Worker, { args: [name] }));
+     });
 
     const sup3 = system.spawn(LimitedSupervisor, {});
     const child: ActorRef = await sup3.call("spawn", "Unstable");

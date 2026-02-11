@@ -13,14 +13,14 @@ const Heartbeat = createActor((ctx, self) => {
   let stopped = false;
   self.sendInterval(methodMsg("beat"), 200);
 
-  self
-    .call("getCount", () => count)
-    .cast("beat", () => {
+  return self
+    .onCall("getCount", () => count)
+    .onCast("beat", () => {
       if (stopped) return;
       count++;
       console.log(`  [Heartbeat] Beat #${count}`);
     })
-    .cast("stop", () => {
+    .onCast("stop", () => {
       stopped = true;
       console.log("  [Heartbeat] Stopped");
     });
@@ -29,13 +29,13 @@ const Heartbeat = createActor((ctx, self) => {
 const Reminder = createActor((ctx, self) => {
   const fired: string[] = [];
 
-  self
-    .call("getFired", () => [...fired])
-    .cast("schedule", (text: string, delayMs: number) => {
+  return self
+    .onCall("getFired", () => [...fired])
+    .onCast("schedule", (text: string, delayMs: number) => {
       console.log(`  [Reminder] Scheduling "${text}" in ${delayMs}ms`);
       self.sendAfter(methodMsg("fire", text), delayMs);
     })
-    .cast("fire", (text: string) => {
+    .onCast("fire", (text: string) => {
       console.log(`  [Reminder] FIRED: ${text}`);
       fired.push(text);
     });
@@ -45,15 +45,15 @@ const Debounce = createActor((ctx, self) => {
   const processed: string[] = [];
   let generation = 0;
 
-  self
-    .call("getProcessed", () => [...processed])
-    .cast("input", (value: string) => {
+  return self
+    .onCall("getProcessed", () => [...processed])
+    .onCast("input", (value: string) => {
       generation++;
       const myGen = generation;
       console.log(`  [Debounce] Input: "${value}" (gen=${myGen})`);
       self.sendAfter(methodMsg("process", value, myGen), 300);
     })
-    .cast("process", (value: string, gen: number) => {
+    .onCast("process", (value: string, gen: number) => {
       if (gen !== generation) return;
       console.log(`  [Debounce] Processing: "${value}"`);
       processed.push(value);
@@ -64,19 +64,19 @@ const TimeoutTracker = createActor((ctx, self) => {
   let nextId = 0;
   const pending = new Set<string>();
 
-  self
-    .call("getPendingCount", () => pending.size)
-    .call("startRequest", (timeoutMs: number) => {
+  return self
+    .onCall("getPendingCount", () => pending.size)
+    .onCall("startRequest", (timeoutMs: number) => {
       const id = `req-${++nextId}`;
       pending.add(id);
       console.log(`  [Timeout] Started ${id} (timeout=${timeoutMs}ms)`);
       self.sendAfter(methodMsg("expire", id), timeoutMs);
       return id;
     })
-    .cast("complete", (id: string) => {
+    .onCast("complete", (id: string) => {
       if (pending.delete(id)) console.log(`  [Timeout] ${id} completed in time`);
     })
-    .cast("expire", (id: string) => {
+    .onCast("expire", (id: string) => {
       if (pending.delete(id)) console.log(`  [Timeout] ${id} TIMED OUT`);
     });
 });

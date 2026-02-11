@@ -12,15 +12,15 @@ const Cache = createActor((ctx, self) => {
   let timeoutCount = 0;
   console.log("[Cache] Started — will clear after 150ms idle");
   self.setIdleTimeout(150);
-  self
-    .info("timeout", () => {
+  return self
+    .onInfo("timeout", () => {
       timeoutCount++;
       console.log(`[Cache] IDLE TIMEOUT — clearing ${data.size} entries`);
       data.clear();
     })
-    .call("size", () => data.size)
-    .call("timeoutCount", () => timeoutCount)
-    .cast("set", (key: string, value: string) => {
+    .onCall("size", () => data.size)
+    .onCall("timeoutCount", () => timeoutCount)
+    .onCast("set", (key: string, value: string) => {
       data.set(key, value);
       console.log(`[Cache] Set "${key}" = "${value}" (size: ${data.size})`);
     });
@@ -30,8 +30,8 @@ const Session = createActor((ctx, self, userId: string) => {
   let state: "active" | "warning" | "expired" = "active";
   console.log(`[Session:${userId}] Started — active`);
   self.setIdleTimeout(150);
-  self
-    .info("timeout", () => {
+  return self
+    .onInfo("timeout", () => {
       if (state === "active") {
         state = "warning";
         console.log(`[Session:${userId}] WARNING: idle — will expire in 100ms`);
@@ -42,8 +42,8 @@ const Session = createActor((ctx, self, userId: string) => {
         self.setIdleTimeout(0);
       }
     })
-    .call("state", () => state)
-    .cast("activity", (action: string) => {
+    .onCall("state", () => state)
+    .onCast("activity", (action: string) => {
       console.log(`[Session:${userId}] Activity: ${action}`);
       if (state === "warning") {
         console.log(`[Session:${userId}] Back to active`);
@@ -59,8 +59,8 @@ const ConnectionPool = createActor((ctx, self) => {
   let pruneCount = 0;
   console.log("[Pool] Started — prunes idle connections every 150ms");
   self.setIdleTimeout(150);
-  self
-    .info("timeout", () => {
+  return self
+    .onInfo("timeout", () => {
       const now = Date.now();
       const toPrune: string[] = [];
       for (const [id, conn] of connections.entries()) {
@@ -74,15 +74,15 @@ const ConnectionPool = createActor((ctx, self) => {
         console.log("[Pool] Prune check: no idle connections");
       }
     })
-    .call("count", () => connections.size)
-    .call("pruned", () => pruneCount)
-    .call("list", () => Array.from(connections.keys()))
-    .cast("acquire", () => {
+    .onCall("count", () => connections.size)
+    .onCall("pruned", () => pruneCount)
+    .onCall("list", () => Array.from(connections.keys()))
+    .onCast("acquire", () => {
       const id = `conn-${nextId++}`;
       connections.set(id, { lastUsed: Date.now(), active: true });
       console.log(`[Pool] Acquired ${id} (total: ${connections.size})`);
     })
-    .cast("release", (connId: string) => {
+    .onCast("release", (connId: string) => {
       const conn = connections.get(connId);
       if (conn) {
         conn.active = false;

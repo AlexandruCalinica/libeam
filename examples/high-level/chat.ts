@@ -17,19 +17,19 @@ const methodMsg = (method: string, ...args: any[]) => ({ method, args });
 const ChatRoom = createActor((ctx, self) => {
   const participants = new Map<string, ActorRef>();
 
-  self
-    .call("getParticipants", () => Array.from(participants.keys()))
-    .cast("join", (name: string, ref: ActorRef) => {
+  return self
+    .onCall("getParticipants", () => Array.from(participants.keys()))
+    .onCast("join", (name: string, ref: ActorRef) => {
       participants.set(name, ref);
       broadcast(`${name} has joined the chat.`);
       console.log(`  [ChatRoom] ${name} joined (${participants.size} total)`);
     })
-    .cast("leave", (name: string) => {
+    .onCast("leave", (name: string) => {
       participants.delete(name);
       broadcast(`${name} has left the chat.`);
       console.log(`  [ChatRoom] ${name} left (${participants.size} total)`);
     })
-    .cast("message", (from: string, text: string) => {
+    .onCast("message", (from: string, text: string) => {
       broadcast(`[${from}] ${text}`);
     });
 
@@ -46,13 +46,13 @@ const User = createActor((ctx, self, name: string, roomRef: ActorRef) => {
   // Join the room on init
   roomRef.cast(methodMsg("join", name, ctx.self));
 
-  self
-    .call("getMessages", () => [...received])
-    .cast("notify", (text: string) => {
+  return self
+    .onCall("getMessages", () => [...received])
+    .onCast("notify", (text: string) => {
       received.push(text);
       console.log(`  [${name}] ${text}`);
     })
-    .cast("say", (text: string) => {
+    .onCast("say", (text: string) => {
       roomRef.cast(methodMsg("message", name, text));
     });
 });

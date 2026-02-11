@@ -9,8 +9,8 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 const Worker = createActor((ctx, self, name: string) => {
   console.log(`  [${name}] Started`);
-  self
-    .cast("crash", () => {
+  return self
+    .onCast("crash", () => {
       console.log(`  [${name}] Crashing!`);
       throw new Error(`${name} crashed`);
     })
@@ -23,14 +23,14 @@ const Coordinator = createActor((ctx, self, name: string) => {
   const linked = new Map<string, { ref: ActorRef; linkRef: LinkRef }>();
   console.log(`  [Coord:${name}] Started`);
 
-  self
-    .call("getLinked", () => Array.from(linked.keys()))
-    .cast("linkWorker", (id: string, ref: ActorRef) => {
+  return self
+    .onCall("getLinked", () => Array.from(linked.keys()))
+    .onCast("linkWorker", (id: string, ref: ActorRef) => {
       const linkRef = ctx.link(ref);
       linked.set(id, { ref, linkRef });
       console.log(`  [Coord:${name}] Linked to ${id}`);
     })
-    .cast("unlinkWorker", (id: string) => {
+    .onCast("unlinkWorker", (id: string) => {
       const entry = linked.get(id);
       if (entry) {
         ctx.unlink(entry.linkRef);
@@ -50,15 +50,15 @@ const Supervisor = createActor((ctx, self, name: string) => {
   ctx.setTrapExit(true);
   console.log(`  [Sup:${name}] Started (trapExit=true)`);
 
-  self
-    .call("getWorkers", () => Array.from(workers.keys()))
-    .call("getExitLog", () => [...exitLog])
-    .cast("linkWorker", (id: string, ref: ActorRef) => {
+  return self
+    .onCall("getWorkers", () => Array.from(workers.keys()))
+    .onCall("getExitLog", () => [...exitLog])
+    .onCast("linkWorker", (id: string, ref: ActorRef) => {
       ctx.link(ref);
       workers.set(id, ref);
       console.log(`  [Sup:${name}] Linked to ${id}`);
     })
-    .info("exit", (msg: ExitMessage) => {
+    .onInfo("exit", (msg: ExitMessage) => {
       let workerId = "unknown";
       for (const [id, ref] of workers.entries()) {
         if (ref.id.id === msg.actorRef.id.id) {

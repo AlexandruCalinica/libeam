@@ -16,7 +16,7 @@ describe("createActor", () => {
     it("should create an actor with a single call handler", async () => {
       const Counter = createActor((ctx, self, initialValue: number) => {
         let count = initialValue;
-        self.call("get", () => count);
+        return self.onCall("get", () => count);
       });
 
       const ref = system.spawn(Counter, { args: [42] });
@@ -26,7 +26,7 @@ describe("createActor", () => {
 
     it("should handle call handlers with arguments", async () => {
       const Calculator = createActor((ctx, self) => {
-        self.call("add", (a: number, b: number) => a + b);
+        return self.onCall("add", (a: number, b: number) => a + b);
       });
 
       const ref = system.spawn(Calculator, {});
@@ -39,11 +39,11 @@ describe("createActor", () => {
     it("should create an actor with a single cast handler", async () => {
       let receivedValue: number | undefined;
       const Receiver = createActor((ctx, self) => {
-        self
-          .cast("receive", (value: number) => {
+        return self
+          .onCast("receive", (value: number) => {
             receivedValue = value;
           })
-          .call("getValue", () => receivedValue);
+          .onCall("getValue", () => receivedValue);
       });
 
       const ref = system.spawn(Receiver, {});
@@ -60,11 +60,11 @@ describe("createActor", () => {
     it("should create an actor with multiple call handlers", async () => {
       const Counter = createActor((ctx, self, initial: number) => {
         let count = initial;
-        self
-          .call("get", () => count)
-          .call("increment", () => ++count)
-          .call("decrement", () => --count)
-          .call("add", (n: number) => (count += n));
+        return self
+          .onCall("get", () => count)
+          .onCall("increment", () => ++count)
+          .onCall("decrement", () => --count)
+          .onCall("add", (n: number) => (count += n));
       });
 
       const ref = system.spawn(Counter, { args: [10] });
@@ -80,14 +80,14 @@ describe("createActor", () => {
         let name = "";
         let age = 0;
 
-        self
-          .cast("setName", (n: string) => {
+        return self
+          .onCast("setName", (n: string) => {
             name = n;
           })
-          .cast("setAge", (a: number) => {
+          .onCast("setAge", (a: number) => {
             age = a;
           })
-          .call("getData", () => ({ name, age }));
+          .onCall("getData", () => ({ name, age }));
       });
 
       const ref = system.spawn(Store, {});
@@ -107,13 +107,13 @@ describe("createActor", () => {
       const ChainedActor = createActor((ctx, self, initial: number) => {
         let value = initial;
 
-        self
-          .call("get", () => value)
-          .call("double", () => value * 2)
-          .cast("set", (v: number) => {
+        return self
+          .onCall("get", () => value)
+          .onCall("double", () => value * 2)
+          .onCast("set", (v: number) => {
             value = v;
           })
-          .cast("reset", () => {
+          .onCast("reset", () => {
             value = initial;
           });
       });
@@ -137,9 +137,9 @@ describe("createActor", () => {
     it("should maintain private state via closure", async () => {
       const Counter = createActor((ctx, self) => {
         let count = 0;
-        self
-          .call("increment", () => ++count)
-          .call("get", () => count);
+        return self
+          .onCall("increment", () => ++count)
+          .onCall("get", () => count);
       });
 
       const ref1 = system.spawn(Counter, {});
@@ -160,7 +160,7 @@ describe("createActor", () => {
     it("should pass init args correctly to the factory function", async () => {
       const ConfigActor = createActor(
         (ctx, self, name: string, value: number, enabled: boolean) => {
-          self.call("getConfig", () => ({ name, value, enabled }));
+          return self.onCall("getConfig", () => ({ name, value, enabled }));
         }
       );
 
@@ -172,7 +172,7 @@ describe("createActor", () => {
 
     it("should handle actors with no init args", async () => {
       const SimpleActor = createActor((ctx, self) => {
-        self.call("ping", () => "pong");
+        return self.onCall("ping", () => "pong");
       });
 
       const ref = system.spawn(SimpleActor, {});
@@ -187,7 +187,7 @@ describe("createActor", () => {
 
       const SelfAwareActor = createActor((ctx, self) => {
         capturedSelfId = ctx.self.id.id;
-        self.call("getSelfId", () => ctx.self.id.id);
+        return self.onCall("getSelfId", () => ctx.self.id.id);
       });
 
       const ref = system.spawn(SelfAwareActor, {});
@@ -204,7 +204,7 @@ describe("createActor", () => {
 
       const RootActor = createActor((ctx, self) => {
         capturedParent = ctx.parent;
-        self.call("hasParent", () => ctx.parent !== undefined);
+        return self.onCall("hasParent", () => ctx.parent !== undefined);
       });
 
       const ref = system.spawn(RootActor, {});
@@ -218,18 +218,18 @@ describe("createActor", () => {
   describe("ctx.spawn() spawns child functional actors", () => {
     it("should spawn child functional actors", async () => {
       const ChildActor = createActor((ctx, self, name: string) => {
-        self.call("getName", () => name);
+        return self.onCall("getName", () => name);
       });
 
       const ParentActor = createActor((ctx, self) => {
         let childRef: ActorRef | null = null;
 
-        self
-          .call("spawnChild", (name: string) => {
+        return self
+          .onCall("spawnChild", (name: string) => {
             childRef = ctx.spawn(ChildActor, { args: [name] });
             return childRef.id.id;
           })
-          .call("callChild", async () => {
+          .onCall("callChild", async () => {
             if (!childRef) return null;
             return childRef.call("getName");
           });
@@ -251,17 +251,17 @@ describe("createActor", () => {
       let downActorId: string | null = null;
 
       const TargetActor = createActor((ctx, self) => {
-        self.call("ping", () => "pong");
+        return self.onCall("ping", () => "pong");
       });
 
       const WatcherActor = createActor((ctx, self) => {
-        self
-          .call("setTarget", (ref: ActorRef) => {
+        return self
+          .onCall("setTarget", (ref: ActorRef) => {
             ctx.watch(ref);
             return true;
           })
-          .call("getDownStatus", () => ({ downReceived, downActorId }))
-          .info("down", (msg) => {
+          .onCall("getDownStatus", () => ({ downReceived, downActorId }))
+          .onInfo("down", (msg: any) => {
             downReceived = true;
             downActorId = msg.actorRef?.id?.id;
           });
@@ -288,19 +288,19 @@ describe("createActor", () => {
       let exitReason: any = null;
 
       const LinkedActor = createActor((ctx, self) => {
-        self.call("ping", () => "pong");
+        return self.onCall("ping", () => "pong");
       });
 
       const LinkingActor = createActor((ctx, self) => {
         ctx.setTrapExit(true);
 
-        self
-          .call("linkTo", (ref: ActorRef) => {
+        return self
+          .onCall("linkTo", (ref: ActorRef) => {
             ctx.link(ref);
             return true;
           })
-          .call("getExitStatus", () => ({ exitReceived, exitReason }))
-          .info("exit", (msg) => {
+          .onCall("getExitStatus", () => ({ exitReceived, exitReason }))
+          .onInfo("exit", (msg: any) => {
             exitReceived = true;
             exitReason = msg.reason;
           });
@@ -325,7 +325,7 @@ describe("createActor", () => {
       let terminateCalled = false;
 
       const TerminatingActor = createActor((ctx, self) => {
-        self.call("ping", () => "pong").onTerminate(() => {
+        return self.onCall("ping", () => "pong").onTerminate(() => {
           terminateCalled = true;
         });
       });
@@ -343,7 +343,7 @@ describe("createActor", () => {
       let cleanupComplete = false;
 
       const AsyncTerminatingActor = createActor((ctx, self) => {
-        self.call("ping", () => "pong").onTerminate(async () => {
+        return self.onCall("ping", () => "pong").onTerminate(async () => {
           await new Promise((r) => setTimeout(r, 50));
           cleanupComplete = true;
         });
@@ -403,7 +403,7 @@ describe("createActor", () => {
           continueCallCount++;
         });
 
-        self.call("ping", () => "pong");
+        self.onCall("ping", () => "pong");
       });
 
       const ref = system.spawn(NoContinueActor, {});
@@ -443,9 +443,9 @@ describe("createActor", () => {
             count = initial;
             ready = true;
           })
-          .call("isReady", () => ready)
-          .call("get", () => count)
-          .cast("add", (value: number) => {
+          .onCall("isReady", () => ready)
+          .onCall("get", () => count)
+          .onCast("add", (value: number) => {
             count += value;
           });
 
@@ -472,19 +472,19 @@ describe("createActor", () => {
         let blocked = true;
         const processed: string[] = [];
 
-        self
-          .cast("work", (value: string) => {
+        return self
+          .onCast("work", (value: string) => {
             if (blocked) {
               ctx.stash();
               return;
             }
             processed.push(value);
           })
-          .call("release", () => {
+          .onCall("release", () => {
             blocked = false;
             ctx.unstashAll();
           })
-          .call("getProcessed", () => [...processed]);
+          .onCall("getProcessed", () => [...processed]);
       });
 
       const ref = system.spawn(DeferredActor, {});
@@ -505,19 +505,19 @@ describe("createActor", () => {
         let blocked = true;
         const processed: string[] = [];
 
-        self
-          .cast("work", (value: string) => {
+        return self
+          .onCast("work", (value: string) => {
             if (blocked) {
               ctx.stash();
               return;
             }
             processed.push(value);
           })
-          .call("unstashEverything", () => {
+          .onCall("unstashEverything", () => {
             blocked = false;
             ctx.unstashAll();
           })
-          .call("getProcessed", () => [...processed]);
+          .onCall("getProcessed", () => [...processed]);
       });
 
       const ref = system.spawn(QueueActor, {});
@@ -544,8 +544,8 @@ describe("createActor", () => {
         let blocked = true;
         const processed: string[] = [];
 
-        self
-          .cast("work", (value: string) => {
+        return self
+          .onCast("work", (value: string) => {
             if (blocked) {
               ctx.stash();
               return;
@@ -553,11 +553,11 @@ describe("createActor", () => {
             processed.push(value);
             blocked = true;
           })
-          .call("releaseOne", () => {
+          .onCall("releaseOne", () => {
             blocked = false;
             ctx.unstash();
           })
-          .call("getProcessed", () => [...processed]);
+          .onCall("getProcessed", () => [...processed]);
       });
 
       const ref = system.spawn(OneByOneActor, {});
@@ -592,22 +592,22 @@ describe("createActor", () => {
         let blocked = true;
         const processed: string[] = [];
 
-        self
-          .cast("work", (value: string) => {
+        return self
+          .onCast("work", (value: string) => {
             if (blocked) {
               ctx.stash();
               return;
             }
             processed.push(value);
           })
-          .call("clear", () => {
+          .onCall("clear", () => {
             ctx.clearStash();
             blocked = false;
           })
-          .call("unstashEverything", () => {
+          .onCall("unstashEverything", () => {
             ctx.unstashAll();
           })
-          .call("getProcessed", () => [...processed]);
+          .onCall("getProcessed", () => [...processed]);
       });
 
       const ref = system.spawn(ClearableActor, {});
@@ -637,14 +637,14 @@ describe("createActor", () => {
             ready = true;
             ctx.unstashAll();
           })
-          .cast("work", (value: string) => {
+          .onCast("work", (value: string) => {
             if (!ready) {
               ctx.stash();
               return;
             }
             processed.push(value);
           })
-          .call("getProcessed", () => [...processed]);
+          .onCall("getProcessed", () => [...processed]);
 
         return { continue: "boot" };
       });
@@ -668,18 +668,18 @@ describe("createActor", () => {
       const CallStashActor = createActor((ctx, self) => {
         let ready = false;
 
-        self
-          .call("request", (value: string) => {
+        return self
+          .onCall("request", (value: string) => {
             if (!ready) {
               ctx.stash();
               return;
             }
             return `processed:${value}`;
           })
-          .call("clear", () => {
+          .onCall("clear", () => {
             ctx.clearStash();
           })
-          .call("setReady", () => {
+          .onCall("setReady", () => {
             ready = true;
             ctx.unstashAll();
           });
@@ -702,18 +702,18 @@ describe("createActor", () => {
         let messages: string[] = [];
         let processedCount = 0;
 
-        self
-          .call("getMessages", () => [...messages])
-          .call("getProcessedCount", () => processedCount)
-          .call("processMessage", (msg: string) => {
+        return self
+          .onCall("getMessages", () => [...messages])
+          .onCall("getProcessedCount", () => processedCount)
+          .onCall("processMessage", (msg: string) => {
             messages.push(msg);
             processedCount++;
             return processedCount;
           })
-          .cast("addMessage", (msg: string) => {
+          .onCast("addMessage", (msg: string) => {
             messages.push(msg);
           })
-          .cast("clearMessages", () => {
+          .onCast("clearMessages", () => {
             messages = [];
           });
       });
@@ -744,7 +744,7 @@ describe("createActor", () => {
   describe("unknown method throws error", () => {
     it("should throw error for unknown call method", async () => {
       const SimpleActor = createActor((ctx, self) => {
-        self.call("known", () => "ok");
+        return self.onCall("known", () => "ok");
       });
 
       const ref = system.spawn(SimpleActor, {});
@@ -756,9 +756,9 @@ describe("createActor", () => {
 
     it("should not throw for unknown cast method (silent ignore)", async () => {
       const SimpleActor = createActor((ctx, self) => {
-        self
-          .cast("known", () => {})
-          .call("ping", () => "pong");
+        return self
+          .onCast("known", () => {})
+          .onCall("ping", () => "pong");
       });
 
       const ref = system.spawn(SimpleActor, {});
@@ -774,7 +774,7 @@ describe("createActor", () => {
   describe("complex scenarios", () => {
     it("should handle actors returning promises from call handlers", async () => {
       const AsyncActor = createActor((ctx, self) => {
-        self.call("asyncOperation", async (delay: number) => {
+        return self.onCall("asyncOperation", async (delay: number) => {
           await new Promise((r) => setTimeout(r, delay));
           return "done";
         });
@@ -787,7 +787,7 @@ describe("createActor", () => {
 
     it("should handle errors thrown in call handlers", async () => {
       const ErrorActor = createActor((ctx, self) => {
-        self.call("fail", () => {
+        return self.onCall("fail", () => {
           throw new Error("intentional error");
         });
       });
@@ -802,9 +802,9 @@ describe("createActor", () => {
     it("should handle multiple actors of the same definition", async () => {
       const Counter = createActor((ctx, self, initial: number) => {
         let count = initial;
-        self
-          .call("get", () => count)
-          .cast("add", (n: number) => {
+        return self
+          .onCall("get", () => count)
+          .onCast("add", (n: number) => {
             count += n;
           });
       });
@@ -838,9 +838,9 @@ describe("createActor", () => {
 
     const CrashableChild = createActor((ctx, self, name: string) => {
       restartEvents.push(`init:${name}`);
-      self
-        .call("getName", () => name)
-        .cast("crash", () => {
+      return self
+        .onCall("getName", () => name)
+        .onCast("crash", () => {
           throw new Error(`${name} crashed`);
         })
         .onTerminate(() => {
@@ -850,7 +850,7 @@ describe("createActor", () => {
 
     it("should use default one-for-one supervision when not set", async () => {
       const Parent = createActor((ctx, self) => {
-        self.call("spawnChild", (name: string) => {
+        return self.onCall("spawnChild", (name: string) => {
           return ctx.spawn(CrashableChild, { args: [name] });
         });
       });
@@ -875,13 +875,13 @@ describe("createActor", () => {
 
     it("should use custom one-for-all strategy", async () => {
       const OneForAllParent = createActor((ctx, self) => {
-        self
+        return self
           .childSupervision({
             strategy: "one-for-all",
             maxRestarts: 3,
             periodMs: 5000,
           })
-          .call("spawnChild", (name: string) => {
+          .onCall("spawnChild", (name: string) => {
             return ctx.spawn(CrashableChild, { args: [name] });
           });
       });
@@ -909,13 +909,13 @@ describe("createActor", () => {
 
     it("should use custom rest-for-one strategy", async () => {
       const RestForOneParent = createActor((ctx, self) => {
-        self
+        return self
           .childSupervision({
             strategy: "rest-for-one",
             maxRestarts: 3,
             periodMs: 5000,
           })
-          .call("spawnChild", (name: string) => {
+          .onCall("spawnChild", (name: string) => {
             return ctx.spawn(CrashableChild, { args: [name] });
           });
       });
@@ -943,16 +943,16 @@ describe("createActor", () => {
 
     it("should enforce max restart limit", async () => {
       const LimitedParent = createActor((ctx, self) => {
-        self
+        return self
           .childSupervision({
             strategy: "one-for-one",
             maxRestarts: 2,
             periodMs: 10000,
           })
-          .call("spawnChild", (name: string) => {
+          .onCall("spawnChild", (name: string) => {
             return ctx.spawn(CrashableChild, { args: [name] });
           })
-          .call("crashChild", () => {
+          .onCall("crashChild", () => {
             const parentActor = system.system.getActor(ctx.self.id.id);
             if (parentActor && parentActor.context.children.size > 0) {
               const child = Array.from(parentActor.context.children)[0];
@@ -961,7 +961,7 @@ describe("createActor", () => {
             }
             return false;
           })
-          .call("childCount", () => {
+          .onCall("childCount", () => {
             const parentActor = system.system.getActor(ctx.self.id.id);
             return parentActor ? parentActor.context.children.size : 0;
           });

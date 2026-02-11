@@ -13,6 +13,8 @@ import { Transport } from "./transport";
 import { Cluster } from "./cluster";
 import { Registry } from "./registry";
 import {
+  ActorRefFrom,
+  ActorRegistry,
   ActorDefinition,
   DistributedConfig,
   LocalConfig,
@@ -45,6 +47,11 @@ export interface System {
   spawn<T extends Actor>(actorClass: new () => T, options?: SpawnOptions): ActorRef;
   /** Register an actor class for remote spawning */
   register(actorClass: new () => Actor): void;
+  /** Look up a named actor (local or remote) */
+  getActorByName<K extends keyof ActorRegistry & string>(
+    name: K,
+  ): Promise<ActorRefFrom<ActorRegistry[K]> | null>;
+  getActorByName(name: string): Promise<ActorRef | null>;
   /** Gracefully shut down the system */
   shutdown(): Promise<void>;
   /** The underlying transport layer */
@@ -87,6 +94,14 @@ class SystemImpl implements System {
 
   register(actorClass: new () => Actor): void {
     this.system.registerActorClass(actorClass);
+  }
+
+  getActorByName<K extends keyof ActorRegistry & string>(
+    name: K,
+  ): Promise<ActorRefFrom<ActorRegistry[K]> | null>;
+  getActorByName(name: string): Promise<ActorRef | null>;
+  getActorByName(name: string): Promise<ActorRef | null> {
+    return this.system.getActorByName(name);
   }
 
   async shutdown(): Promise<void> {
