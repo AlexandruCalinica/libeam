@@ -13,6 +13,7 @@ import {
 } from "../actor";
 import type { ActorSystem } from "../actor_system";
 import type { SpawnOptions } from "../actor_system";
+import type { Authenticator } from "../auth";
 import type { GossipOptions } from "../gossip_protocol";
 import type { SupervisionOptions } from "../supervisor";
 
@@ -57,6 +58,10 @@ export interface DistributedConfig {
   seedNodes: string[];
   gossip?: GossipConfig;
   supervision?: SupervisionConfig;
+  /** Shorthand: shared secret for CookieAuthenticator. If both `cookie` and `auth` are provided, `auth` takes precedence. */
+  cookie?: string;
+  /** Custom authenticator override. Takes precedence over `cookie` if both are provided. */
+  auth?: Authenticator;
 }
 
 export interface ActorContext {

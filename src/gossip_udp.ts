@@ -2,7 +2,8 @@
 
 import * as dgram from "dgram";
 import { EventEmitter } from "events";
-import { GossipMessage } from "./gossip";
+import type { Authenticator } from "./auth";
+import { AuthenticatedGossipMessage, GossipMessage } from "./gossip";
 import { Logger, createLogger } from "./logger";
 
 const UDP_MAX_SIZE = 65507; // Maximum size for a UDP payload
@@ -21,11 +22,17 @@ export interface GossipUDPConfig {
 export class GossipUDP extends EventEmitter {
   private socket!: dgram.Socket;
   private readonly config: GossipUDPConfig;
+  private readonly auth?: Authenticator;
   private readonly log: Logger;
+  private readonly warnedUnauthorizedPeers = new Set<string>();
 
-  constructor(config: GossipUDPConfig) {
+  constructor(config: GossipUDPConfig & { auth?: Authenticator }) {
     super();
-    this.config = config;
+    this.config = {
+      address: config.address,
+      port: config.port,
+    };
+    this.auth = config.auth;
     this.log = createLogger("GossipUDP").child({
       address: `${config.address}:${config.port}`,
     });
@@ -46,8 +53,26 @@ export class GossipUDP extends EventEmitter {
 
       this.socket.on("message", (msg, rinfo) => {
         try {
-          const decoded: GossipMessage = JSON.parse(msg.toString());
-          this.emit("message", decoded, rinfo);
+          const decoded: AuthenticatedGossipMessage = JSON.parse(msg.toString());
+
+          if (this.auth) {
+            if (!this.auth.verifyGossip(decoded)) {
+              const peer = `${rinfo.address}:${rinfo.port}`;
+              if (!this.warnedUnauthorizedPeers.has(peer)) {
+                this.warnedUnauthorizedPeers.add(peer);
+                this.log.warn("Rejected unauthenticated gossip message", {
+                  from: peer,
+                });
+              }
+              return;
+            }
+          }
+
+          const gossipMessage: GossipMessage = {
+            senderId: decoded.senderId,
+            peers: decoded.peers,
+          };
+          this.emit("message", gossipMessage, rinfo);
         } catch (e) {
           this.log.warn("Failed to parse gossip message", {
             from: `${rinfo.address}:${rinfo.port}`,
@@ -93,7 +118,8 @@ export class GossipUDP extends EventEmitter {
     targetPort: number,
   ): Promise<void> {
     return new Promise((resolve, reject) => {
-      const payload = Buffer.from(JSON.stringify(message));
+      const outgoingMessage = this.auth ? this.auth.signGossip(message) : message;
+      const payload = Buffer.from(JSON.stringify(outgoingMessage));
       const target = `${targetAddress}:${targetPort}`;
 
       if (payload.length > UDP_MAX_SIZE) {

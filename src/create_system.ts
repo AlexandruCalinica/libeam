@@ -1,5 +1,7 @@
 import { Actor, ActorRef } from "./actor";
 import { ActorSystem, SpawnOptions } from "./actor_system";
+import { CookieAuthenticator } from "./auth";
+import type { Authenticator } from "./auth";
 import { LocalCluster } from "./local_cluster";
 import { InMemoryTransport } from "./in_memory_transport";
 import { LocalRegistry } from "./local_registry";
@@ -12,6 +14,7 @@ import { DistributedRegistry } from "./distributed_registry";
 import { Transport } from "./transport";
 import { Cluster } from "./cluster";
 import { Registry } from "./registry";
+import { createLogger } from "./logger";
 import {
   ActorRefFrom,
   ActorRegistry,
@@ -141,9 +144,34 @@ function createLocalSystem(config?: LocalConfig): System {
   return new SystemImpl(system, transport, cluster, registry);
 }
 
+function resolveAuthenticator(config: DistributedConfig, nodeId: string): Authenticator | null {
+  if (config.auth) {
+    return config.auth;
+  }
+
+  if (config.cookie) {
+    return new CookieAuthenticator(config.cookie);
+  }
+
+  const envCookie = process.env.LIBEAM_COOKIE;
+  if (envCookie) {
+    return new CookieAuthenticator(envCookie);
+  }
+
+  const log = createLogger("createSystem", nodeId);
+  log.warn(
+    "Distributed system starting WITHOUT authentication. Set cookie via createSystem({ cookie: '...' }) or LIBEAM_COOKIE env var."
+  );
+  return null;
+}
+
 async function createDistributedSystem(config: DistributedConfig): Promise<System> {
   const nodeId = config.nodeId ?? `node-${uuidv4().slice(0, 8)}`;
   const bindAddress = config.bindAddress ?? "0.0.0.0";
+
+  if (config.cookie !== undefined && config.cookie === "") {
+    throw new Error("cookie must not be empty. Provide a non-empty string or omit the option.");
+  }
 
   let rpcPort: number;
   let pubPort: number;
@@ -161,19 +189,21 @@ async function createDistributedSystem(config: DistributedConfig): Promise<Syste
     throw new Error("Distributed config requires either 'port' or 'ports'");
   }
 
-  // 1. Setup transport (ZeroMQ)
+  const authenticator = resolveAuthenticator(config, nodeId);
+
   const transport = new ZeroMQTransport({
     nodeId,
     rpcPort,
     pubPort,
     bindAddress,
+    auth: authenticator ?? undefined,
   });
   await transport.connect();
 
-  // 2. Setup gossip protocol for membership
   const gossipUDP = new GossipUDP({
     address: bindAddress,
     port: gossipPort,
+    auth: authenticator ?? undefined,
   });
 
   const gossipOptions: GossipOptions = {
@@ -191,6 +221,7 @@ async function createDistributedSystem(config: DistributedConfig): Promise<Syste
     gossipAddress,
     gossipUDP,
     gossipOptions,
+    authenticator ?? undefined,
   );
 
   // 3. Setup cluster (wraps gossip protocol)

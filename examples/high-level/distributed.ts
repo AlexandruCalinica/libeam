@@ -8,6 +8,7 @@
 //
 // This example shows:
 // - createSystem({ type: "distributed" }) for zero-boilerplate multi-node setup
+// - Cookie-based authentication: both nodes must share the same cookie to communicate
 // - Named actors for cross-node discovery via ctx.getActorByName()
 // - ActorRegistry module augmentation for typed getActorByName
 // - Bidirectional ping-pong between actors on different nodes
@@ -85,6 +86,7 @@ async function main() {
       nodeId: "node1",
       port: 5000,
       seedNodes: ["127.0.0.1:5012"],
+      cookie: "my-cluster-secret",
     });
 
     const ping = system.spawn(Ping, { name: "ping" });
@@ -107,6 +109,7 @@ async function main() {
       nodeId: "node2",
       port: 5010,
       seedNodes: ["127.0.0.1:5002"],
+      cookie: "my-cluster-secret",
     });
 
     system.spawn(Pong, { name: "pong" });

@@ -1,10 +1,12 @@
 // src/gossip_protocol.ts
 
+import type { Authenticator } from "./auth";
 import { GossipMessage, PeerState, PeerStatus } from "./gossip";
 
 // Re-export PeerState and PeerStatus for consumers of this module
 export { PeerState, PeerStatus } from "./gossip";
 import { GossipUDP } from "./gossip_udp";
+import { Logger, createLogger } from "./logger";
 import { EventEmitter } from "events";
 import * as dgram from "dgram";
 
@@ -27,6 +29,8 @@ export class GossipProtocol extends EventEmitter {
   private gossipIntervalTimer?: NodeJS.Timeout;
   private cleanupIntervalTimer?: NodeJS.Timeout;
   private _isLeaving = false;
+  private readonly log: Logger;
+  private hasWarnedOpenModeReceive = false;
 
   constructor(
     nodeId: string,
@@ -34,8 +38,10 @@ export class GossipProtocol extends EventEmitter {
     gossipAddress: string, // UDP address (e.g., 127.0.0.1:6000)
     private readonly gossipUDP: GossipUDP,
     private readonly options: GossipOptions,
+    private readonly auth?: Authenticator,
   ) {
     super();
+    this.log = createLogger("GossipProtocol", nodeId).child({ gossipAddress });
     this.self = {
       id: nodeId,
       address: rpcAddress,
@@ -210,6 +216,13 @@ export class GossipProtocol extends EventEmitter {
     message: GossipMessage,
     rinfo: dgram.RemoteInfo,
   ): void {
+    if (!this.auth && !this.hasWarnedOpenModeReceive) {
+      this.hasWarnedOpenModeReceive = true;
+      this.log.warn("Received gossip message without authentication configured", {
+        from: `${rinfo.address}:${rinfo.port}`,
+      });
+    }
+
     // Merge incoming peer state with local state
     message.peers.forEach((incomingPeer) => {
       const localPeer = this.peers.get(incomingPeer.id);

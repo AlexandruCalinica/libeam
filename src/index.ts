@@ -24,6 +24,9 @@ export * from "./heartbeat";
 export * from "./migration";
 export * from "./create_system";
 export * from "./create_actor";
+export { AuthenticationError } from "./errors";
+export { AuthenticatedGossipMessage } from "./gossip";
+export { Authenticator, CookieAuthenticator, NullAuthenticator } from "./auth";
 export {
   LocalConfig,
   DistributedConfig,

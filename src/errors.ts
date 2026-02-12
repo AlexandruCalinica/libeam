@@ -109,3 +109,17 @@ export class PeerNotFoundError extends LibeamError {
     this.name = "PeerNotFoundError";
   }
 }
+
+/**
+ * Error thrown when authentication fails.
+ */
+export class AuthenticationError extends LibeamError {
+  constructor(reason: string, nodeId?: string) {
+    super(
+      `Authentication failed: ${reason}${nodeId ? ` (node: ${nodeId})` : ""}`,
+      "AUTHENTICATION_FAILED",
+      { nodeId, reason },
+    );
+    this.name = "AuthenticationError";
+  }
+}

@@ -33,3 +33,15 @@ export interface GossipMessage {
   /** The sender's entire view of the peer table. */
   peers: PeerState[];
 }
+
+/**
+ * Represents an authenticated gossip message with optional HMAC and nonce.
+ * Extends GossipMessage with optional authentication fields for signed messages.
+ * The optional fields ensure backward compatibility with unauthenticated messages.
+ */
+export interface AuthenticatedGossipMessage extends GossipMessage {
+  /** Hex-encoded random bytes used for replay protection. */
+  nonce?: string;
+  /** Hex-encoded HMAC-SHA256 digest of the message. */
+  hmac?: string;
+}

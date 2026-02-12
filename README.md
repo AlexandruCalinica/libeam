@@ -222,6 +222,7 @@ const system1 = await createSystem({
   type: "distributed",
   port: 5000,
   seedNodes: [],
+  cookie: "my-cluster-secret",
 });
 const ping = system1.spawn(Ping, { name: "ping" });
 
@@ -230,6 +231,7 @@ const system2 = await createSystem({
   type: "distributed",
   port: 5010,
   seedNodes: ["127.0.0.1:5002"],
+  cookie: "my-cluster-secret",
 });
 system2.spawn(Pong, { name: "pong" });
 
@@ -1294,6 +1296,58 @@ interface ShutdownOptions {
 }
 ```
 
+## Authentication
+
+Distributed systems can be secured with cookie-based authentication, inspired by Erlang's distribution cookie. When configured, nodes verify each other using HMAC-SHA256 signatures on gossip messages and challenge-response handshakes on transport connections.
+
+### Cookie Configuration
+
+```typescript
+const system = await createSystem({
+  type: "distributed",
+  port: 5000,
+  seedNodes: ["127.0.0.1:6002"],
+  cookie: "my-cluster-secret",
+});
+```
+
+All nodes in a cluster must share the same cookie. Nodes with different cookies cannot communicate — gossip messages are silently dropped and transport connections are rejected.
+
+### Environment Variable
+
+Instead of passing the cookie in code, set the `LIBEAM_COOKIE` environment variable:
+
+```bash
+LIBEAM_COOKIE=my-cluster-secret npx tsx app.ts
+```
+
+The precedence order is: `auth` option > `cookie` option > `LIBEAM_COOKIE` env var. If none are set, the system starts in open mode with a warning logged.
+
+### Custom Authenticator
+
+For advanced use cases, implement the `Authenticator` interface:
+
+```typescript
+import { Authenticator, CookieAuthenticator } from "libeam";
+
+const system = await createSystem({
+  type: "distributed",
+  port: 5000,
+  seedNodes: [],
+  auth: new CookieAuthenticator("my-secret"),
+});
+```
+
+The `Authenticator` interface covers both gossip (per-message HMAC signing) and transport (challenge-response handshake). See `src/auth.ts` for the full interface.
+
+### Known Limitations
+
+| Limitation | Details |
+|------------|---------|
+| PUB/SUB not authenticated | Registry sync messages are not signed in v1. Use network-level isolation (VPN/firewall) for defense in depth. |
+| Cookie rotation requires restart | All nodes must restart to change the cookie. No hot-swap mechanism. |
+| Authentication only, no encryption | HMAC proves identity but does not encrypt message payloads. |
+
 ## Logging
 
 Libeam includes a structured logging system with configurable log levels and handlers.
@@ -1370,6 +1424,7 @@ try {
 | `TransportError` | `TRANSPORT_ERROR` | Network transport failure |
 | `PeerNotFoundError` | `PEER_NOT_FOUND` | Peer node not known |
 | `ActorClassNotRegisteredError` | `ACTOR_CLASS_NOT_REGISTERED` | Actor class not registered for remote spawn |
+| `AuthenticationError` | `AUTHENTICATION_FAILED` | Node authentication failed |
 | `ActorNotMigratableError` | `ACTOR_NOT_MIGRATABLE` | Actor doesn't implement `Migratable` |
 | `ActorHasChildrenError` | `ACTOR_HAS_CHILDREN` | Actor has child actors |
 
