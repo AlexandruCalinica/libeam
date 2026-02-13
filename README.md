@@ -1298,9 +1298,26 @@ interface ShutdownOptions {
 
 ## Authentication
 
-Distributed systems can be secured with cookie-based authentication, inspired by Erlang's distribution cookie. When configured, nodes verify each other using HMAC-SHA256 signatures on gossip messages and challenge-response handshakes on transport connections.
+Distributed systems can be secured with cookie-based authentication, inspired by Erlang's distribution cookie. When configured, nodes verify each other using HMAC-SHA256 signatures on gossip messages and CurveZMQ encryption on transport connections.
 
 ### Cookie Configuration
+
+The cookie must be at least 16 characters for secure key derivation:
+
+```typescript
+const system = await createSystem({
+  type: "distributed",
+  port: 5000,
+  seedNodes: ["127.0.0.1:6002"],
+  cookie: "my-cluster-secret", // ≥16 characters
+});
+```
+
+All nodes in a cluster must share the same cookie. Nodes with different cookies cannot communicate — gossip messages are silently dropped and transport connections are rejected.
+
+### Distributed Configuration with Salt
+
+For distributed setups, you can optionally customize the key derivation salt:
 
 ```typescript
 const system = await createSystem({
@@ -1308,10 +1325,11 @@ const system = await createSystem({
   port: 5000,
   seedNodes: ["127.0.0.1:6002"],
   cookie: "my-cluster-secret",
+  salt: "custom-salt", // Optional, default: "libeam-v2"
 });
 ```
 
-All nodes in a cluster must share the same cookie. Nodes with different cookies cannot communicate — gossip messages are silently dropped and transport connections are rejected.
+The salt is used in HKDF key derivation to separate gossip HMAC keys from CurveZMQ keypairs.
 
 ### Environment Variable
 
@@ -1338,15 +1356,16 @@ const system = await createSystem({
 });
 ```
 
-The `Authenticator` interface covers both gossip (per-message HMAC signing) and transport (challenge-response handshake). See `src/auth.ts` for the full interface.
+The `Authenticator` interface covers gossip message signing and verification (HMAC-SHA256). Transport-level security (encryption + authentication) is handled by CurveZMQ at the socket layer, driven by the cookie. See `src/auth.ts` for the full interface and `deriveKeys`, `z85Encode`, `z85Decode` utilities for advanced use cases.
 
 ### Known Limitations
 
 | Limitation | Details |
 |------------|---------|
-| PUB/SUB not authenticated | Registry sync messages are not signed in v1. Use network-level isolation (VPN/firewall) for defense in depth. |
 | Cookie rotation requires restart | All nodes must restart to change the cookie. No hot-swap mechanism. |
-| Authentication only, no encryption | HMAC proves identity but does not encrypt message payloads. |
+| Gossip UDP is authenticated but not encrypted | HMAC-SHA256 proves identity but does not encrypt message payloads. Use network-level isolation (VPN/firewall) for defense in depth. |
+| CurveZMQ failures are silent | Wrong cookie = messages dropped with no error. Ensure all nodes share the same cookie. |
+| v2 auth is not wire-compatible with v1 | Nodes running v1 and v2 cannot communicate. Upgrade all nodes together. |
 
 ## Logging
 

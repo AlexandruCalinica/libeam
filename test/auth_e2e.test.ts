@@ -151,12 +151,12 @@ describe("authentication end-to-end", () => {
     const udp1 = new GossipUDP({
       address: "127.0.0.1",
       port: port1,
-      auth: new CookieAuthenticator("cookie-alpha"),
+      auth: new CookieAuthenticator("cookie-alpha-value!"),
     });
     const udp2 = new GossipUDP({
       address: "127.0.0.1",
       port: port2,
-      auth: new CookieAuthenticator("cookie-beta"),
+      auth: new CookieAuthenticator("cookie-bravo-value!"),
     });
 
     await udp1.start();
@@ -189,7 +189,7 @@ describe("authentication end-to-end", () => {
     const udpAuth = new GossipUDP({
       address: "127.0.0.1",
       port: portAuth,
-      auth: new CookieAuthenticator("secret"),
+      auth: new CookieAuthenticator("secret-long-enough!"),
     });
     const udpOpen = new GossipUDP({
       address: "127.0.0.1",

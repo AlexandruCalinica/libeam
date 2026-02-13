@@ -14,10 +14,9 @@ export interface AuthenticatedGossipMessage extends GossipMessage {
 }
 
 /**
- * Pluggable authentication interface for securing gossip and transport
- * communication between cluster nodes. Implementations handle both
- * per-message HMAC signing (gossip) and challenge-response handshakes
- * (transport).
+ * Pluggable authentication interface for securing gossip communication
+ * between cluster nodes. Transport-level security (encryption + auth)
+ * is handled by CurveZMQ at the socket layer, driven by the cookie.
  */
 export interface Authenticator {
   /** Adds `nonce` and `hmac` fields to a gossip message. */
@@ -25,20 +24,115 @@ export interface Authenticator {
 
   /** Verifies HMAC integrity and checks nonce has not been replayed. */
   verifyGossip(message: AuthenticatedGossipMessage): boolean;
-
-  /** Generates a random challenge buffer for TCP handshake. */
-  createChallenge(): Buffer;
-
-  /** Computes HMAC of a challenge using the shared secret. */
-  solveChallenge(challenge: Buffer): Buffer;
-
-  /** Verifies a challenge response matches the expected HMAC. */
-  verifyChallenge(challenge: Buffer, response: Buffer): boolean;
 }
+
+/**
+ * Z85 encoding per ZeroMQ RFC 32.
+ * Encodes binary data (length must be multiple of 4) to printable ASCII.
+ */
+const Z85_CHARS =
+  "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ.-:+=^!/*?&<>()[]{}@%$#";
+
+export function z85Encode(data: Buffer): string {
+  if (data.length % 4 !== 0) {
+    throw new Error("Z85 encode: data length must be a multiple of 4");
+  }
+  let str = "";
+  for (let i = 0; i < data.length; i += 4) {
+    let value =
+      ((data[i] << 24) |
+        (data[i + 1] << 16) |
+        (data[i + 2] << 8) |
+        data[i + 3]) >>>
+      0;
+    const chars: string[] = [];
+    for (let j = 4; j >= 0; j--) {
+      chars[j] = Z85_CHARS[value % 85];
+      value = Math.floor(value / 85);
+    }
+    str += chars.join("");
+  }
+  return str;
+}
+
+export function z85Decode(str: string): Buffer {
+  if (str.length % 5 !== 0) {
+    throw new Error("Z85 decode: string length must be a multiple of 5");
+  }
+  const data = Buffer.alloc((str.length / 5) * 4);
+  for (let i = 0, j = 0; i < str.length; i += 5, j += 4) {
+    let value = 0;
+    for (let k = 0; k < 5; k++) {
+      value = value * 85 + Z85_CHARS.indexOf(str[i + k]);
+    }
+    data[j] = (value >> 24) & 0xff;
+    data[j + 1] = (value >> 16) & 0xff;
+    data[j + 2] = (value >> 8) & 0xff;
+    data[j + 3] = value & 0xff;
+  }
+  return data;
+}
+
+export interface CurveKeyPair {
+  publicKey: string; // Z85-encoded, 40 chars
+  secretKey: string; // Z85-encoded, 40 chars
+}
+
+/**
+ * Derives an HMAC key for gossip signing and a CurveZMQ keypair for
+ * transport encryption from a shared cookie using HKDF-SHA256.
+ *
+ * Uses domain-separated info strings to prevent cross-protocol key reuse:
+ * - "gossip-hmac" → 32-byte HMAC key for gossip UDP
+ * - "curve-seed"  → 32-byte seed → X25519 keypair for ZeroMQ CURVE
+ */
+export function deriveKeys(
+  cookie: string,
+  salt: string = "libeam-v2",
+): { hmacKey: Buffer; curveKeyPair: CurveKeyPair } {
+  // Derive HMAC key for gossip signing
+  const hmacKey = Buffer.from(
+    crypto.hkdfSync("sha256", cookie, salt, "gossip-hmac", 32),
+  );
+
+  // Derive Curve25519 seed for transport encryption
+  const curveSeed = Buffer.from(
+    crypto.hkdfSync("sha256", cookie, salt, "curve-seed", 32),
+  );
+
+  // Create X25519 private key from seed using PKCS8 DER encoding
+  const pkcs8Header = Buffer.from(
+    "302e020100300506032b656e04220420",
+    "hex",
+  );
+  const derKey = Buffer.concat([pkcs8Header, curveSeed]);
+  const privKey = crypto.createPrivateKey({
+    key: derKey,
+    format: "der",
+    type: "pkcs8",
+  });
+  const pubKey = crypto.createPublicKey(privKey);
+
+  // Export raw 32-byte public key (last 32 bytes of SPKI DER)
+  const rawPub = pubKey
+    .export({ type: "spki", format: "der" })
+    .subarray(-32);
+
+  return {
+    hmacKey,
+    curveKeyPair: {
+      publicKey: z85Encode(rawPub),
+      secretKey: z85Encode(curveSeed),
+    },
+  };
+}
+
+const MIN_COOKIE_LENGTH = 16;
 
 interface CookieAuthenticatorOptions {
   nonceTtlMs?: number;
   nonceCacheMaxSize?: number;
+  salt?: string;
 }
 
 const DEFAULT_NONCE_TTL_MS = 10_000;
@@ -46,23 +140,38 @@ const DEFAULT_NONCE_CACHE_MAX_SIZE = 10_000;
 
 /**
  * HMAC-SHA256 cookie-based authenticator inspired by Erlang's distribution
- * cookie. Uses a shared secret to sign/verify gossip messages and perform
- * challenge-response handshakes for transport connections.
+ * cookie. Uses HKDF-derived keys for gossip message signing and provides
+ * CurveZMQ keypairs for transport encryption.
  *
  * Security properties:
- * - HMAC-SHA256 for message integrity (cookie never sent in cleartext)
+ * - HKDF-SHA256 key derivation with domain-separated info strings
+ * - HMAC-SHA256 for gossip message integrity
  * - Random nonce per message for replay protection
  * - `crypto.timingSafeEqual()` for all comparisons (timing attack resistant)
  * - Nonce cache with TTL eviction to bound memory usage
+ * - CurveZMQ keypair for transport-level encryption + authentication
  */
 export class CookieAuthenticator implements Authenticator {
-  private readonly cookie: string;
+  private readonly hmacKey: Buffer;
   private readonly nonceTtlMs: number;
   private readonly nonceCacheMaxSize: number;
   private readonly nonceCache: Map<string, number> = new Map();
 
+  /** CurveZMQ keypair derived from the cookie, for transport encryption. */
+  readonly curveKeyPair: CurveKeyPair;
+
   constructor(cookie: string, options?: CookieAuthenticatorOptions) {
-    this.cookie = cookie;
+    if (cookie.length < MIN_COOKIE_LENGTH) {
+      throw new Error(
+        `Cookie must be at least ${MIN_COOKIE_LENGTH} characters for secure key derivation.`,
+      );
+    }
+
+    const salt = options?.salt ?? "libeam-v2";
+    const derived = deriveKeys(cookie, salt);
+
+    this.hmacKey = derived.hmacKey;
+    this.curveKeyPair = derived.curveKeyPair;
     this.nonceTtlMs = options?.nonceTtlMs ?? DEFAULT_NONCE_TTL_MS;
     this.nonceCacheMaxSize =
       options?.nonceCacheMaxSize ?? DEFAULT_NONCE_CACHE_MAX_SIZE;
@@ -104,31 +213,16 @@ export class CookieAuthenticator implements Authenticator {
     return true;
   }
 
-  createChallenge(): Buffer {
-    return crypto.randomBytes(32);
-  }
-
-  solveChallenge(challenge: Buffer): Buffer {
-    return crypto.createHmac("sha256", this.cookie).update(challenge).digest();
-  }
-
-  verifyChallenge(challenge: Buffer, response: Buffer): boolean {
-    const expected = this.solveChallenge(challenge);
-
-    if (expected.length !== response.length) {
-      return false;
-    }
-
-    return crypto.timingSafeEqual(expected, response);
-  }
-
   private computeGossipHmac(message: GossipMessage, nonce: string): string {
     const payload = JSON.stringify({
       senderId: message.senderId,
       peers: message.peers,
       nonce,
     });
-    return crypto.createHmac("sha256", this.cookie).update(payload).digest("hex");
+    return crypto
+      .createHmac("sha256", this.hmacKey)
+      .update(payload)
+      .digest("hex");
   }
 
   private evictExpiredNonces(): void {
@@ -160,18 +254,6 @@ export class NullAuthenticator implements Authenticator {
   }
 
   verifyGossip(_message: AuthenticatedGossipMessage): boolean {
-    return true;
-  }
-
-  createChallenge(): Buffer {
-    return Buffer.alloc(0);
-  }
-
-  solveChallenge(_challenge: Buffer): Buffer {
-    return Buffer.alloc(0);
-  }
-
-  verifyChallenge(_challenge: Buffer, _response: Buffer): boolean {
     return true;
   }
 }

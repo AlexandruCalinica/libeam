@@ -1,7 +1,7 @@
 import { Actor, ActorRef } from "./actor";
 import { ActorSystem, SpawnOptions } from "./actor_system";
 import { CookieAuthenticator } from "./auth";
-import type { Authenticator } from "./auth";
+import type { Authenticator, CurveKeyPair } from "./auth";
 import { LocalCluster } from "./local_cluster";
 import { InMemoryTransport } from "./in_memory_transport";
 import { LocalRegistry } from "./local_registry";
@@ -144,25 +144,35 @@ function createLocalSystem(config?: LocalConfig): System {
   return new SystemImpl(system, transport, cluster, registry);
 }
 
-function resolveAuthenticator(config: DistributedConfig, nodeId: string): Authenticator | null {
-  if (config.auth) {
-    return config.auth;
-  }
+interface ResolvedAuth {
+  gossipAuth: Authenticator | null;
+  curveKeyPair: CurveKeyPair | null;
+}
 
-  if (config.cookie) {
-    return new CookieAuthenticator(config.cookie);
-  }
-
-  const envCookie = process.env.LIBEAM_COOKIE;
-  if (envCookie) {
-    return new CookieAuthenticator(envCookie);
-  }
-
+function resolveAuth(config: DistributedConfig, nodeId: string): ResolvedAuth {
+  const cookie = config.cookie ?? process.env.LIBEAM_COOKIE;
+  const salt = config.salt ?? "libeam-v2";
   const log = createLogger("createSystem", nodeId);
+
+  if (cookie) {
+    const cookieAuth = new CookieAuthenticator(cookie, { salt });
+    return {
+      gossipAuth: config.auth ?? cookieAuth,
+      curveKeyPair: cookieAuth.curveKeyPair,
+    };
+  }
+
+  if (config.auth) {
+    log.warn(
+      "Custom auth provided without cookie. Transport will run WITHOUT encryption.",
+    );
+    return { gossipAuth: config.auth, curveKeyPair: null };
+  }
+
   log.warn(
-    "Distributed system starting WITHOUT authentication. Set cookie via createSystem({ cookie: '...' }) or LIBEAM_COOKIE env var."
+    "Distributed system starting WITHOUT authentication. Set cookie via createSystem({ cookie: '...' }) or LIBEAM_COOKIE env var.",
   );
-  return null;
+  return { gossipAuth: null, curveKeyPair: null };
 }
 
 async function createDistributedSystem(config: DistributedConfig): Promise<System> {
@@ -189,21 +199,31 @@ async function createDistributedSystem(config: DistributedConfig): Promise<Syste
     throw new Error("Distributed config requires either 'port' or 'ports'");
   }
 
-  const authenticator = resolveAuthenticator(config, nodeId);
+  const { gossipAuth, curveKeyPair } = resolveAuth(config, nodeId);
+
+  if (curveKeyPair) {
+    const zmq = await import("zeromq");
+    if (!zmq.capability?.curve) {
+      throw new Error(
+        "CurveZMQ not available: libzmq was built without libsodium. " +
+          "Install zeromq with Curve support or run without authentication.",
+      );
+    }
+  }
 
   const transport = new ZeroMQTransport({
     nodeId,
     rpcPort,
     pubPort,
     bindAddress,
-    auth: authenticator ?? undefined,
+    curveKeyPair: curveKeyPair ?? undefined,
   });
   await transport.connect();
 
   const gossipUDP = new GossipUDP({
     address: bindAddress,
     port: gossipPort,
-    auth: authenticator ?? undefined,
+    auth: gossipAuth ?? undefined,
   });
 
   const gossipOptions: GossipOptions = {
@@ -221,7 +241,7 @@ async function createDistributedSystem(config: DistributedConfig): Promise<Syste
     gossipAddress,
     gossipUDP,
     gossipOptions,
-    authenticator ?? undefined,
+    gossipAuth ?? undefined,
   );
 
   // 3. Setup cluster (wraps gossip protocol)

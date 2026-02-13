@@ -1,7 +1,7 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import * as net from "net";
 import { CookieAuthenticator } from "../src/auth";
-import { AuthenticationError, ZeroMQTransport } from "../src";
+import { TimeoutError, ZeroMQTransport } from "../src";
 
 async function findAvailableTcpPort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -17,7 +17,7 @@ async function findAvailableTcpPort(): Promise<number> {
   });
 }
 
-async function createTransport(nodeId: string, auth?: CookieAuthenticator, handshakeTimeoutMs?: number) {
+async function createTransport(nodeId: string, auth?: CookieAuthenticator) {
   const rpcPort = await findAvailableTcpPort();
   const pubPort = await findAvailableTcpPort();
   return {
@@ -27,8 +27,7 @@ async function createTransport(nodeId: string, auth?: CookieAuthenticator, hands
       rpcPort,
       pubPort,
       bindAddress: "127.0.0.1",
-      auth,
-      handshakeTimeoutMs,
+      curveKeyPair: auth?.curveKeyPair,
     }),
   };
 }
@@ -47,9 +46,9 @@ describe("ZeroMQTransport authentication handshake", () => {
   });
 
   it("completes handshake with matching cookie and allows request/send", async () => {
-    const shared = new CookieAuthenticator("shared-cookie");
+    const shared = new CookieAuthenticator("shared-cookie-value!");
     const a = await createTransport("node-a", shared);
-    const b = await createTransport("node-b", new CookieAuthenticator("shared-cookie"));
+    const b = await createTransport("node-b", new CookieAuthenticator("shared-cookie-value!"));
     transport1 = a.transport;
     transport2 = b.transport;
 
@@ -73,8 +72,8 @@ describe("ZeroMQTransport authentication handshake", () => {
   });
 
   it("rejects requests when cookies do not match", async () => {
-    const a = await createTransport("node-a", new CookieAuthenticator("cookie-a"));
-    const b = await createTransport("node-b", new CookieAuthenticator("cookie-b"));
+    const a = await createTransport("node-a", new CookieAuthenticator("cookie-alpha-value!"));
+    const b = await createTransport("node-b", new CookieAuthenticator("cookie-bravo-value!"));
     transport1 = a.transport;
     transport2 = b.transport;
 
@@ -86,9 +85,9 @@ describe("ZeroMQTransport authentication handshake", () => {
 
     transport2.onRequest(async () => ({ ok: true }));
 
-    await expect(transport1.request("node-b", { type: "ping" }, 1200)).rejects.toBeInstanceOf(
-      AuthenticationError,
-    );
+    await expect(
+      transport1.request("node-b", { type: "ping" }, 1200),
+    ).rejects.toBeInstanceOf(TimeoutError);
   });
 
   it("works without authenticator (backward compatible)", async () => {

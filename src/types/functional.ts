@@ -58,9 +58,11 @@ export interface DistributedConfig {
   seedNodes: string[];
   gossip?: GossipConfig;
   supervision?: SupervisionConfig;
-  /** Shorthand: shared secret for CookieAuthenticator. If both `cookie` and `auth` are provided, `auth` takes precedence. */
+  /** Shared secret (≥16 chars). Derives HMAC key for gossip + CurveZMQ keypair for transport. */
   cookie?: string;
-  /** Custom authenticator override. Takes precedence over `cookie` if both are provided. */
+  /** HKDF salt for key derivation. Default: "libeam-v2". All nodes in a cluster must use the same salt. */
+  salt?: string;
+  /** Custom gossip authenticator. Transport auth always uses cookie-derived CurveZMQ keys. */
   auth?: Authenticator;
 }
 

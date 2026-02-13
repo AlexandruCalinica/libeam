@@ -26,7 +26,15 @@ export * from "./create_system";
 export * from "./create_actor";
 export { AuthenticationError } from "./errors";
 export { AuthenticatedGossipMessage } from "./gossip";
-export { Authenticator, CookieAuthenticator, NullAuthenticator } from "./auth";
+export {
+  Authenticator,
+  CookieAuthenticator,
+  NullAuthenticator,
+  deriveKeys,
+  z85Encode,
+  z85Decode,
+  CurveKeyPair,
+} from "./auth";
 export {
   LocalConfig,
   DistributedConfig,

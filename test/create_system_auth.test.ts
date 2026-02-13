@@ -50,7 +50,7 @@ describe("createSystem auth wiring", () => {
           type: "distributed",
           port: 19100,
           seedNodes: [],
-          cookie: "test-secret-cookie",
+          cookie: "test-secret-cookie!!",
         });
 
         expect(system).toBeDefined();
@@ -61,7 +61,7 @@ describe("createSystem auth wiring", () => {
     });
 
     it("should use auth over cookie when both provided", async () => {
-      const customAuth: Authenticator = new CookieAuthenticator("custom-wins");
+      const customAuth: Authenticator = new CookieAuthenticator("custom-wins-gossip!");
 
       let system;
       try {
@@ -69,7 +69,7 @@ describe("createSystem auth wiring", () => {
           type: "distributed",
           port: 19200,
           seedNodes: [],
-          cookie: "should-be-ignored",
+          cookie: "should-be-ignored!",
           auth: customAuth,
         });
 
@@ -80,7 +80,7 @@ describe("createSystem auth wiring", () => {
     });
 
     it("should use LIBEAM_COOKIE env var when no explicit config", async () => {
-      process.env.LIBEAM_COOKIE = "env-cookie-secret";
+      process.env.LIBEAM_COOKIE = "env-cookie-secret!!";
 
       let system;
       try {

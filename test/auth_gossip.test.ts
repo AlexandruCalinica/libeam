@@ -83,12 +83,12 @@ describe("gossip authentication integration", () => {
     const sender = new GossipUDP({
       address: "127.0.0.1",
       port: senderPort,
-      auth: new CookieAuthenticator("shared-cookie"),
+      auth: new CookieAuthenticator("shared-cookie-value!"),
     });
     const receiver = new GossipUDP({
       address: "127.0.0.1",
       port: receiverPort,
-      auth: new CookieAuthenticator("shared-cookie"),
+      auth: new CookieAuthenticator("shared-cookie-value!"),
     });
 
     await sender.start();
@@ -121,12 +121,12 @@ describe("gossip authentication integration", () => {
     const sender = new GossipUDP({
       address: "127.0.0.1",
       port: senderPort,
-      auth: new CookieAuthenticator("cookie-a"),
+      auth: new CookieAuthenticator("cookie-alpha-value!"),
     });
     const receiver = new GossipUDP({
       address: "127.0.0.1",
       port: receiverPort,
-      auth: new CookieAuthenticator("cookie-b"),
+      auth: new CookieAuthenticator("cookie-bravo-value!"),
     });
 
     await sender.start();
@@ -147,7 +147,7 @@ describe("gossip authentication integration", () => {
     const sender = new GossipUDP({
       address: "127.0.0.1",
       port: senderPort,
-      auth: new CookieAuthenticator("cookie-a"),
+      auth: new CookieAuthenticator("cookie-alpha-value!"),
     });
     const receiver = new GossipUDP({
       address: "127.0.0.1",
@@ -187,7 +187,7 @@ describe("gossip authentication integration", () => {
     const receiver = new GossipUDP({
       address: "127.0.0.1",
       port: receiverPort,
-      auth: new CookieAuthenticator("cookie-a"),
+      auth: new CookieAuthenticator("cookie-alpha-value!"),
     });
 
     await sender.start();
@@ -205,7 +205,7 @@ describe("gossip authentication integration", () => {
     const receiverPort = await getFreePort();
     const tamperedSenderPort = await getFreePort();
 
-    const auth = new CookieAuthenticator("shared-cookie");
+    const auth = new CookieAuthenticator("shared-cookie-value!");
     const receiver = new GossipUDP({
       address: "127.0.0.1",
       port: receiverPort,

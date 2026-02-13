@@ -1,7 +1,15 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import type { GossipMessage } from "../src/gossip";
 import type { AuthenticatedGossipMessage } from "../src/auth";
-import { CookieAuthenticator, NullAuthenticator } from "../src/auth";
+import {
+  CookieAuthenticator,
+  NullAuthenticator,
+  deriveKeys,
+  z85Encode,
+  z85Decode,
+} from "../src/auth";
+
+const VALID_COOKIE = "my-secret-cookie-long-enough";
 
 function makeGossipMessage(overrides?: Partial<GossipMessage>): GossipMessage {
   return {
@@ -25,7 +33,26 @@ describe("CookieAuthenticator", () => {
   let auth: CookieAuthenticator;
 
   beforeEach(() => {
-    auth = new CookieAuthenticator("my-secret-cookie");
+    auth = new CookieAuthenticator(VALID_COOKIE);
+  });
+
+  describe("construction", () => {
+    it("throws if cookie is shorter than 16 characters", () => {
+      expect(() => new CookieAuthenticator("short")).toThrow(
+        "at least 16 characters",
+      );
+    });
+
+    it("accepts cookies of exactly 16 characters", () => {
+      expect(
+        () => new CookieAuthenticator("exactly16charss!"),
+      ).not.toThrow();
+    });
+
+    it("exposes curveKeyPair with Z85-encoded keys", () => {
+      expect(auth.curveKeyPair.publicKey).toHaveLength(40);
+      expect(auth.curveKeyPair.secretKey).toHaveLength(40);
+    });
   });
 
   describe("gossip signing and verification", () => {
@@ -42,7 +69,7 @@ describe("CookieAuthenticator", () => {
     });
 
     it("rejects gossip message signed with different cookie", () => {
-      const auth2 = new CookieAuthenticator("different-cookie");
+      const auth2 = new CookieAuthenticator("different-cookie-value!");
       const msg = makeGossipMessage();
       const signed = auth.signGossip(msg);
 
@@ -53,7 +80,6 @@ describe("CookieAuthenticator", () => {
       const msg = makeGossipMessage();
       const signed = auth.signGossip(msg);
 
-      // Tamper with the peers array
       const tampered: AuthenticatedGossipMessage = {
         ...signed,
         peers: [
@@ -76,10 +102,7 @@ describe("CookieAuthenticator", () => {
       const msg = makeGossipMessage();
       const signed = auth.signGossip(msg);
 
-      // First verify should succeed
       expect(auth.verifyGossip(signed)).toBe(true);
-
-      // Second verify with same nonce should fail (replay)
       expect(auth.verifyGossip(signed)).toBe(false);
     });
 
@@ -104,81 +127,29 @@ describe("CookieAuthenticator", () => {
     });
   });
 
-  describe("challenge-response", () => {
-    it("createChallenge returns 32 random bytes", () => {
-      const challenge = auth.createChallenge();
-
-      expect(Buffer.isBuffer(challenge)).toBe(true);
-      expect(challenge.length).toBe(32);
-    });
-
-    it("createChallenge returns unique values", () => {
-      const c1 = auth.createChallenge();
-      const c2 = auth.createChallenge();
-
-      expect(c1.equals(c2)).toBe(false);
-    });
-
-    it("solveChallenge produces valid HMAC", () => {
-      const challenge = auth.createChallenge();
-      const response = auth.solveChallenge(challenge);
-
-      expect(Buffer.isBuffer(response)).toBe(true);
-      // SHA-256 HMAC produces 32 bytes
-      expect(response.length).toBe(32);
-    });
-
-    it("verifyChallenge with correct response returns true", () => {
-      const challenge = auth.createChallenge();
-      const response = auth.solveChallenge(challenge);
-
-      expect(auth.verifyChallenge(challenge, response)).toBe(true);
-    });
-
-    it("verifyChallenge with wrong response returns false", () => {
-      const challenge = auth.createChallenge();
-      const wrongResponse = Buffer.alloc(32, 0);
-
-      expect(auth.verifyChallenge(challenge, wrongResponse)).toBe(false);
-    });
-
-    it("verifyChallenge with response from different cookie returns false", () => {
-      const auth2 = new CookieAuthenticator("other-cookie");
-      const challenge = auth.createChallenge();
-      const response = auth2.solveChallenge(challenge);
-
-      expect(auth.verifyChallenge(challenge, response)).toBe(false);
-    });
-  });
-
   describe("nonce cache", () => {
     it("evicts old entries after TTL", async () => {
-      // Use a very short TTL for testing
-      const shortTtlAuth = new CookieAuthenticator("cookie", {
+      const shortTtlAuth = new CookieAuthenticator(VALID_COOKIE, {
         nonceTtlMs: 50,
       });
 
       const msg = makeGossipMessage();
       const signed = shortTtlAuth.signGossip(msg);
 
-      // First verify succeeds
       expect(shortTtlAuth.verifyGossip(signed)).toBe(true);
 
-      // Wait for TTL to expire
       await new Promise((resolve) => setTimeout(resolve, 100));
 
-      // After TTL, same nonce should be accepted again (evicted from cache)
       expect(shortTtlAuth.verifyGossip(signed)).toBe(true);
     });
 
     it("respects max size by evicting oldest entries", () => {
-      const smallCacheAuth = new CookieAuthenticator("cookie", {
+      const smallCacheAuth = new CookieAuthenticator(VALID_COOKIE, {
         nonceCacheMaxSize: 3,
       });
 
       const messages: AuthenticatedGossipMessage[] = [];
 
-      // Sign 4 messages (exceeds max size of 3)
       for (let i = 0; i < 4; i++) {
         const msg = makeGossipMessage({ senderId: `node-${i}` });
         const signed = smallCacheAuth.signGossip(msg);
@@ -186,12 +157,79 @@ describe("CookieAuthenticator", () => {
         messages.push(signed);
       }
 
-      // The first nonce should have been evicted, so replaying it succeeds
       expect(smallCacheAuth.verifyGossip(messages[0])).toBe(true);
-
-      // But the last one is still in cache, so replaying it fails
       expect(smallCacheAuth.verifyGossip(messages[3])).toBe(false);
     });
+  });
+});
+
+describe("deriveKeys", () => {
+  it("produces deterministic output for same cookie + salt", () => {
+    const a = deriveKeys("test-cookie-at-least-16", "salt1");
+    const b = deriveKeys("test-cookie-at-least-16", "salt1");
+
+    expect(a.hmacKey.equals(b.hmacKey)).toBe(true);
+    expect(a.curveKeyPair.publicKey).toBe(b.curveKeyPair.publicKey);
+    expect(a.curveKeyPair.secretKey).toBe(b.curveKeyPair.secretKey);
+  });
+
+  it("different cookies produce different keys", () => {
+    const a = deriveKeys("cookie-alpha-sixteen", "salt");
+    const b = deriveKeys("cookie-bravo-sixteen", "salt");
+
+    expect(a.hmacKey.equals(b.hmacKey)).toBe(false);
+    expect(a.curveKeyPair.publicKey).not.toBe(b.curveKeyPair.publicKey);
+  });
+
+  it("different salts produce different keys", () => {
+    const a = deriveKeys("same-cookie-for-both!", "salt-a");
+    const b = deriveKeys("same-cookie-for-both!", "salt-b");
+
+    expect(a.hmacKey.equals(b.hmacKey)).toBe(false);
+    expect(a.curveKeyPair.publicKey).not.toBe(b.curveKeyPair.publicKey);
+  });
+
+  it("HMAC key differs from Curve secret key (domain separation)", () => {
+    const { hmacKey, curveKeyPair } = deriveKeys("domain-sep-cookie!!", "salt");
+    const curveSecretRaw = z85Decode(curveKeyPair.secretKey);
+
+    expect(hmacKey.equals(curveSecretRaw)).toBe(false);
+  });
+
+  it("produces Z85-encoded keys of correct length", () => {
+    const { curveKeyPair } = deriveKeys("z85-length-test-cookie", "salt");
+
+    expect(curveKeyPair.publicKey).toHaveLength(40);
+    expect(curveKeyPair.secretKey).toHaveLength(40);
+  });
+
+  it("uses default salt when none provided", () => {
+    const a = deriveKeys("default-salt-test-cookie");
+    const b = deriveKeys("default-salt-test-cookie", "libeam-v2");
+
+    expect(a.hmacKey.equals(b.hmacKey)).toBe(true);
+    expect(a.curveKeyPair.publicKey).toBe(b.curveKeyPair.publicKey);
+  });
+});
+
+describe("Z85 encoding", () => {
+  it("round-trips 32 bytes correctly", () => {
+    const input = Buffer.alloc(32);
+    for (let i = 0; i < 32; i++) input[i] = i * 7;
+
+    const encoded = z85Encode(input);
+    expect(encoded).toHaveLength(40);
+
+    const decoded = z85Decode(encoded);
+    expect(decoded.equals(input)).toBe(true);
+  });
+
+  it("throws for data length not multiple of 4", () => {
+    expect(() => z85Encode(Buffer.alloc(3))).toThrow("multiple of 4");
+  });
+
+  it("throws for string length not multiple of 5", () => {
+    expect(() => z85Decode("abc")).toThrow("multiple of 5");
   });
 });
 
@@ -224,22 +262,5 @@ describe("NullAuthenticator", () => {
     } as AuthenticatedGossipMessage;
 
     expect(auth.verifyGossip(msg)).toBe(true);
-  });
-
-  it("createChallenge returns a Buffer", () => {
-    const challenge = auth.createChallenge();
-    expect(Buffer.isBuffer(challenge)).toBe(true);
-  });
-
-  it("solveChallenge returns a Buffer", () => {
-    const challenge = Buffer.from("test");
-    const response = auth.solveChallenge(challenge);
-    expect(Buffer.isBuffer(response)).toBe(true);
-  });
-
-  it("verifyChallenge always returns true", () => {
-    const challenge = Buffer.from("test");
-    const response = Buffer.from("anything");
-    expect(auth.verifyChallenge(challenge, response)).toBe(true);
   });
 });

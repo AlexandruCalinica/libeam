@@ -1,21 +1,8 @@
-// src/zeromq_transport.ts
-
 import * as zmq from "zeromq";
-import {
-  Transport,
-  Subscription,
-  MessageHandler,
-  RequestHandler,
-} from "./transport";
+import { MessageHandler, RequestHandler, Subscription, Transport } from "./transport";
 import { v4 as uuidv4 } from "uuid";
-import { Logger, createLogger } from "./logger";
-import {
-  AuthenticationError,
-  PeerNotFoundError,
-  TimeoutError,
-  TransportError,
-} from "./errors";
-import type { Authenticator } from "./auth";
+import { createLogger, Logger } from "./logger";
+import { PeerNotFoundError, TimeoutError, TransportError } from "./errors";
 
 interface PendingRequest {
   resolve: (value: any) => void;
@@ -28,63 +15,20 @@ interface RpcEnvelope {
   payload: any;
 }
 
-type ConnectionState = "connecting" | "handshaking" | "authenticated" | "ready";
-
-interface QueuedOutboundMessage {
-  payload: string;
-  resolve?: () => void;
-  onError?: (error: Error) => void;
-}
-
 interface DealerConnection {
   dealer: zmq.Dealer;
-  state: ConnectionState;
-  queue: QueuedOutboundMessage[];
-  handshakePromise?: Promise<void>;
-  resolveHandshake?: () => void;
-  rejectHandshake?: (error: Error) => void;
-  handshakeTimer?: NodeJS.Timeout;
-}
-
-interface HandshakeChallengeMessage {
-  __libeamAuth: true;
-  type: "challenge";
-  challenge: string;
-}
-
-interface HandshakeResponseMessage {
-  __libeamAuth: true;
-  type: "response";
-  response: string;
-}
-
-interface HandshakeReadyMessage {
-  __libeamAuth: true;
-  type: "ready";
-}
-
-interface HandshakeErrorMessage {
-  __libeamAuth: true;
-  type: "error";
-  reason: string;
-}
-
-interface ServerHandshakeState {
-  state: "handshaking" | "authenticated";
-  challenge?: Buffer;
-  timer?: NodeJS.Timeout;
 }
 
 interface ZeroMQTransportConfig {
   nodeId: string;
-  rpcPort: number; // Port for ROUTER socket
-  pubPort: number; // Port for PUB socket
-  bindAddress?: string; // Default: 0.0.0.0
-  auth?: Authenticator;
-  handshakeTimeoutMs?: number;
+  rpcPort: number;
+  pubPort: number;
+  bindAddress?: string;
+  curveKeyPair?: {
+    publicKey: string; // Z85-encoded
+    secretKey: string; // Z85-encoded
+  };
 }
-
-const DEFAULT_HANDSHAKE_TIMEOUT_MS = 5000;
 
 export class ZeroMQTransport implements Transport {
   private readonly nodeId: string;
@@ -92,15 +36,13 @@ export class ZeroMQTransport implements Transport {
   private readonly pubAddress: string;
   private readonly bindAddress: string;
   private readonly log: Logger;
+  private readonly curveKeyPair?: { publicKey: string; secretKey: string };
 
   private rpcSocket?: zmq.Router;
   private pubSocket?: zmq.Publisher;
   private subSocket?: zmq.Subscriber;
 
-  private readonly auth?: Authenticator;
-  private readonly handshakeTimeoutMs: number;
   private dealerConnections = new Map<string, DealerConnection>();
-  private serverAuthStates = new Map<string, ServerHandshakeState>();
   private pendingRequests = new Map<string, PendingRequest>();
   private subscriptions = new Map<string, MessageHandler[]>();
   private peerAddresses = new Map<string, { rpc: string; pub: string }>();
@@ -113,9 +55,7 @@ export class ZeroMQTransport implements Transport {
     this.bindAddress = config.bindAddress || "0.0.0.0";
     this.rpcAddress = `tcp://${this.bindAddress}:${config.rpcPort}`;
     this.pubAddress = `tcp://${this.bindAddress}:${config.pubPort}`;
-    this.auth = config.auth;
-    this.handshakeTimeoutMs =
-      config.handshakeTimeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS;
+    this.curveKeyPair = config.curveKeyPair;
     this.log = createLogger("ZeroMQTransport", this.nodeId);
   }
 
@@ -124,69 +64,64 @@ export class ZeroMQTransport implements Transport {
   }
 
   async connect(): Promise<void> {
-    this.rpcSocket = new zmq.Router();
+    const curveServerOpts = this.curveKeyPair
+      ? { curveServer: true, curveSecretKey: this.curveKeyPair.secretKey }
+      : {};
+
+    this.rpcSocket = new zmq.Router({ ...curveServerOpts });
     await this.rpcSocket.bind(this.rpcAddress);
 
-    this.pubSocket = new zmq.Publisher();
+    this.pubSocket = new zmq.Publisher({ ...curveServerOpts });
     await this.pubSocket.bind(this.pubAddress);
 
-    this.subSocket = new zmq.Subscriber();
+    const curveClientOpts = this.curveKeyPair
+      ? {
+          curveServerKey: this.curveKeyPair.publicKey,
+          curvePublicKey: this.curveKeyPair.publicKey,
+          curveSecretKey: this.curveKeyPair.secretKey,
+        }
+      : {};
+
+    this.subSocket = new zmq.Subscriber({ ...curveClientOpts });
 
     this.runRpcLoop();
     this.runSubLoop();
   }
 
   async disconnect(): Promise<void> {
-    // Cleanup pending requests
     for (const [, pending] of this.pendingRequests.entries()) {
       clearTimeout(pending.timer);
       pending.reject(new Error("Transport disconnected"));
     }
     this.pendingRequests.clear();
 
-    // Close all sockets
-    if (this.rpcSocket) this.rpcSocket.close();
-    if (this.pubSocket) this.pubSocket.close();
-    if (this.subSocket) this.subSocket.close();
+    if (this.rpcSocket) {
+      this.rpcSocket.close();
+    }
+    if (this.pubSocket) {
+      this.pubSocket.close();
+    }
+    if (this.subSocket) {
+      this.subSocket.close();
+    }
 
     for (const connection of this.dealerConnections.values()) {
-      if (connection.handshakeTimer) {
-        clearTimeout(connection.handshakeTimer);
-      }
       connection.dealer.close();
     }
     this.dealerConnections.clear();
-
-    for (const state of this.serverAuthStates.values()) {
-      if (state.timer) {
-        clearTimeout(state.timer);
-      }
-    }
-    this.serverAuthStates.clear();
   }
 
   updatePeers(peers: Array<[nodeId: string, address: string]>): void {
-    // Parse address format: "tcp://host:rpcPort:pubPort"
-    // Expected format from gossip: address contains RPC endpoint
-
     const newPeerIds = new Set(peers.map(([id]) => id));
 
-    // Remove disconnected peers
     for (const [peerId] of this.peerAddresses.entries()) {
       if (!newPeerIds.has(peerId)) {
-        // Disconnect from this peer's PUB socket
         if (this.subSocket) {
           this.subSocket.unsubscribe();
-          // Note: ZeroMQ doesn't have a disconnect per-address API
-          // We would need to track subscriptions more carefully
         }
 
-        // Close dealer socket
         const connection = this.dealerConnections.get(peerId);
         if (connection) {
-          if (connection.handshakeTimer) {
-            clearTimeout(connection.handshakeTimer);
-          }
           connection.dealer.close();
           this.dealerConnections.delete(peerId);
         }
@@ -195,11 +130,8 @@ export class ZeroMQTransport implements Transport {
       }
     }
 
-    // Add new peers
     for (const [peerId, rpcAddress] of peers) {
       if (!this.peerAddresses.has(peerId) && peerId !== this.nodeId) {
-        // Parse RPC address to derive PUB address
-        // Assuming format: tcp://host:rpcPort and pubPort = rpcPort + 1
         const match = rpcAddress.match(/tcp:\/\/([^:]+):(\d+)/);
         if (match) {
           const host = match[1];
@@ -209,7 +141,6 @@ export class ZeroMQTransport implements Transport {
 
           this.peerAddresses.set(peerId, { rpc: rpcAddress, pub: pubAddress });
 
-          // Subscribe to peer's PUB socket
           if (this.subSocket) {
             this.subSocket.connect(pubAddress);
           }
@@ -234,7 +165,7 @@ export class ZeroMQTransport implements Transport {
 
       this.pendingRequests.set(correlationId, { resolve, reject, timer });
 
-      this.sendOrQueue(nodeId, connection, serializedEnvelope).catch((err) => {
+      this.sendMessage(nodeId, connection, serializedEnvelope).catch((err) => {
         clearTimeout(timer);
         this.pendingRequests.delete(correlationId);
         reject(err);
@@ -248,7 +179,7 @@ export class ZeroMQTransport implements Transport {
     const envelope = { type: "message", payload: message };
     const serializedEnvelope = JSON.stringify(envelope);
 
-    await this.sendOrQueue(nodeId, connection, serializedEnvelope);
+    await this.sendMessage(nodeId, connection, serializedEnvelope);
   }
 
   async publish(topic: string, message: any): Promise<void> {
@@ -258,10 +189,7 @@ export class ZeroMQTransport implements Transport {
     await this.pubSocket.send([topic, JSON.stringify(message)]);
   }
 
-  async subscribe(
-    topic: string,
-    handler: MessageHandler,
-  ): Promise<Subscription> {
+  async subscribe(topic: string, handler: MessageHandler): Promise<Subscription> {
     if (!this.subSocket) {
       throw new Error("Transport not connected");
     }
@@ -300,16 +228,20 @@ export class ZeroMQTransport implements Transport {
     this.messageHandler = handler;
   }
 
-  private async runRpcLoop() {
-    if (!this.rpcSocket) return;
+  private async runRpcLoop(): Promise<void> {
+    if (!this.rpcSocket) {
+      return;
+    }
 
     for await (const [identity, messageBuffer] of this.rpcSocket) {
       void this.handleRouterMessage(identity as Buffer, messageBuffer as Buffer);
     }
   }
 
-  private async runSubLoop() {
-    if (!this.subSocket) return;
+  private async runSubLoop(): Promise<void> {
+    if (!this.subSocket) {
+      return;
+    }
 
     for await (const [topicBuffer, messageBuffer] of this.subSocket) {
       try {
@@ -330,17 +262,13 @@ export class ZeroMQTransport implements Transport {
     }
   }
 
-  private async handleDealerResponse(nodeId: string, connection: DealerConnection) {
+  private async handleDealerResponse(
+    nodeId: string,
+    connection: DealerConnection,
+  ): Promise<void> {
     for await (const [messageBuffer] of connection.dealer) {
       try {
-        const parsed = JSON.parse(messageBuffer.toString());
-
-        if (this.isHandshakeMessage(parsed)) {
-          await this.handleClientHandshakeMessage(nodeId, connection, parsed);
-          continue;
-        }
-
-        const envelope: RpcEnvelope = parsed;
+        const envelope: RpcEnvelope = JSON.parse(messageBuffer.toString());
         if (typeof envelope.correlationId === "string") {
           const pending = this.pendingRequests.get(envelope.correlationId);
 
@@ -376,12 +304,15 @@ export class ZeroMQTransport implements Transport {
       throw new PeerNotFoundError(nodeId);
     }
 
-    const dealer = new zmq.Dealer();
-    const connection: DealerConnection = {
-      dealer,
-      state: "connecting",
-      queue: [],
-    };
+    const curveClientOpts = this.curveKeyPair
+      ? {
+          curveServerKey: this.curveKeyPair.publicKey,
+          curvePublicKey: this.curveKeyPair.publicKey,
+          curveSecretKey: this.curveKeyPair.secretKey,
+        }
+      : {};
+
+    const dealer = new zmq.Dealer({ ...curveClientOpts });
 
     try {
       dealer.connect(addresses.rpc);
@@ -398,172 +329,32 @@ export class ZeroMQTransport implements Transport {
       );
     }
 
+    const connection: DealerConnection = { dealer };
     this.dealerConnections.set(nodeId, connection);
-    this.handleDealerResponse(nodeId, connection);
-
-    if (this.auth) {
-      this.startClientHandshake(nodeId, connection);
-    } else {
-      connection.state = "ready";
-    }
+    void this.handleDealerResponse(nodeId, connection);
 
     return connection;
   }
 
-  private startClientHandshake(nodeId: string, connection: DealerConnection): void {
-    if (!this.auth) {
-      connection.state = "ready";
-      return;
-    }
-
-    connection.state = "handshaking";
-    connection.handshakePromise = new Promise<void>((resolve, reject) => {
-      connection.resolveHandshake = resolve;
-      connection.rejectHandshake = reject;
-    });
-    connection.handshakePromise.catch(() => undefined);
-
-    connection.handshakeTimer = setTimeout(() => {
-      const error = new AuthenticationError("Handshake timed out", nodeId);
-      this.failClientHandshake(nodeId, connection, error);
-    }, this.handshakeTimeoutMs);
-
-    const helloMessage = JSON.stringify({ __libeamAuth: true, type: "hello" });
-    connection.dealer.send(helloMessage).catch((err) => {
-      const wrapped = new TransportError(
-        `Failed to initiate handshake with ${nodeId}`,
-        nodeId,
-        err instanceof Error ? err : undefined,
-      );
-      this.failClientHandshake(nodeId, connection, wrapped);
-    });
-  }
-
-  private async handleClientHandshakeMessage(
-    nodeId: string,
-    connection: DealerConnection,
-    message:
-      | { __libeamAuth: true; type: "hello" }
-      | HandshakeChallengeMessage
-      | HandshakeReadyMessage
-      | HandshakeErrorMessage
-      | HandshakeResponseMessage,
-  ): Promise<void> {
-    if (!this.auth || connection.state === "ready") {
-      return;
-    }
-
-    if (message.type === "challenge") {
-      if (connection.state !== "handshaking") {
-        return;
-      }
-      const challenge = Buffer.from(message.challenge, "hex");
-      const response = this.auth.solveChallenge(challenge).toString("hex");
-      const responseMessage: HandshakeResponseMessage = {
-        __libeamAuth: true,
-        type: "response",
-        response,
-      };
-      await connection.dealer.send(JSON.stringify(responseMessage));
-      return;
-    }
-
-    if (message.type === "ready") {
-      this.completeClientHandshake(connection);
-      return;
-    }
-
-    if (message.type === "error") {
-      this.failClientHandshake(
-        nodeId,
-        connection,
-        new AuthenticationError(message.reason, nodeId),
-      );
-    }
-  }
-
-  private completeClientHandshake(connection: DealerConnection): void {
-    if (connection.handshakeTimer) {
-      clearTimeout(connection.handshakeTimer);
-      connection.handshakeTimer = undefined;
-    }
-
-    connection.state = "authenticated";
-    connection.state = "ready";
-    connection.resolveHandshake?.();
-    this.flushConnectionQueue(connection);
-  }
-
-  private failClientHandshake(
-    nodeId: string,
-    connection: DealerConnection,
-    error: Error,
-  ): void {
-    if (connection.handshakeTimer) {
-      clearTimeout(connection.handshakeTimer);
-      connection.handshakeTimer = undefined;
-    }
-
-    connection.rejectHandshake?.(error);
-
-    const queued = [...connection.queue];
-    connection.queue = [];
-    for (const item of queued) {
-      item.onError?.(error);
-    }
-
-    connection.dealer.close();
-    this.dealerConnections.delete(nodeId);
-  }
-
-  private flushConnectionQueue(connection: DealerConnection): void {
-    const queued = [...connection.queue];
-    connection.queue = [];
-
-    for (const item of queued) {
-      connection.dealer
-        .send(item.payload)
-        .then(() => {
-          item.resolve?.();
-        })
-        .catch((err) => {
-          item.onError?.(
-            new TransportError(
-              "Failed to send queued message",
-              undefined,
-              err instanceof Error ? err : undefined,
-            ),
-          );
-        });
-    }
-  }
-
-  private async sendOrQueue(
+  private async sendMessage(
     nodeId: string,
     connection: DealerConnection,
     payload: string,
   ): Promise<void> {
-    if (connection.state === "ready") {
-      try {
-        await connection.dealer.send(payload);
-      } catch (err) {
-        this.log.error(
-          "Failed to send message",
-          err instanceof Error ? err : new Error(String(err)),
-          { peerId: nodeId },
-        );
-        throw new TransportError(
-          `Failed to send message to ${nodeId}`,
-          nodeId,
-          err instanceof Error ? err : undefined,
-        );
-      }
-      return;
+    try {
+      await connection.dealer.send(payload);
+    } catch (err) {
+      this.log.error(
+        "Failed to send message",
+        err instanceof Error ? err : new Error(String(err)),
+        { peerId: nodeId },
+      );
+      throw new TransportError(
+        `Failed to send message to ${nodeId}`,
+        nodeId,
+        err instanceof Error ? err : undefined,
+      );
     }
-
-    await new Promise<void>((resolve, reject) => {
-      connection.queue.push({ payload, resolve, onError: reject });
-    });
   }
 
   private async handleRouterMessage(
@@ -572,13 +363,6 @@ export class ZeroMQTransport implements Transport {
   ): Promise<void> {
     try {
       const data = JSON.parse(messageBuffer.toString());
-
-      if (this.auth) {
-        const authenticated = await this.ensureServerAuthentication(identity, data);
-        if (!authenticated) {
-          return;
-        }
-      }
 
       if (data.correlationId && data.payload !== undefined) {
         if (this.requestHandler) {
@@ -609,119 +393,5 @@ export class ZeroMQTransport implements Transport {
         err instanceof Error ? err : new Error(String(err)),
       );
     }
-  }
-
-  private async ensureServerAuthentication(
-    identity: Buffer,
-    data: any,
-  ): Promise<boolean> {
-    if (!this.auth) {
-      return true;
-    }
-
-    const identityKey = identity.toString("hex");
-    const state = this.serverAuthStates.get(identityKey);
-
-    if (state?.state === "authenticated") {
-      return true;
-    }
-
-    if (!this.isHandshakeMessage(data)) {
-      await this.issueChallenge(identityKey, identity);
-      return false;
-    }
-
-    if (data.type === "hello") {
-      await this.issueChallenge(identityKey, identity);
-      return false;
-    }
-
-    if (data.type === "response" && state?.state === "handshaking" && state.challenge) {
-      const response = Buffer.from(data.response, "hex");
-      const verified = this.auth.verifyChallenge(state.challenge, response);
-
-      if (!verified) {
-        if (state.timer) {
-          clearTimeout(state.timer);
-        }
-        this.serverAuthStates.delete(identityKey);
-        this.log.warn("Rejected dealer authentication", { identity: identityKey });
-
-        const errorMessage: HandshakeErrorMessage = {
-          __libeamAuth: true,
-          type: "error",
-          reason: "Invalid challenge response",
-        };
-        await this.rpcSocket!.send([identity, JSON.stringify(errorMessage)]);
-        return false;
-      }
-
-      if (state.timer) {
-        clearTimeout(state.timer);
-      }
-
-      this.serverAuthStates.set(identityKey, { state: "authenticated" });
-      const ready: HandshakeReadyMessage = {
-        __libeamAuth: true,
-        type: "ready",
-      };
-      await this.rpcSocket!.send([identity, JSON.stringify(ready)]);
-      return false;
-    }
-
-    return false;
-  }
-
-  private async issueChallenge(identityKey: string, identity: Buffer): Promise<void> {
-    if (!this.auth) {
-      return;
-    }
-
-    const existing = this.serverAuthStates.get(identityKey);
-    if (existing?.state === "authenticated") {
-      return;
-    }
-
-    if (existing?.timer) {
-      clearTimeout(existing.timer);
-    }
-
-    const challenge = this.auth.createChallenge();
-    const timer = setTimeout(() => {
-      const stale = this.serverAuthStates.get(identityKey);
-      if (stale?.timer) {
-        clearTimeout(stale.timer);
-      }
-      this.serverAuthStates.delete(identityKey);
-    }, this.handshakeTimeoutMs);
-
-    this.serverAuthStates.set(identityKey, {
-      state: "handshaking",
-      challenge,
-      timer,
-    });
-
-    const challengeMessage: HandshakeChallengeMessage = {
-      __libeamAuth: true,
-      type: "challenge",
-      challenge: challenge.toString("hex"),
-    };
-    await this.rpcSocket!.send([identity, JSON.stringify(challengeMessage)]);
-  }
-
-  private isHandshakeMessage(
-    message: any,
-  ): message is
-    | { __libeamAuth: true; type: "hello" }
-    | HandshakeChallengeMessage
-    | HandshakeResponseMessage
-    | HandshakeReadyMessage
-    | HandshakeErrorMessage {
-    return (
-      typeof message === "object" &&
-      message !== null &&
-      message.__libeamAuth === true &&
-      typeof message.type === "string"
-    );
   }
 }
