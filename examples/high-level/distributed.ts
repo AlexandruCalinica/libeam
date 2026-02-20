@@ -11,6 +11,7 @@
 // - Cookie-based authentication: both nodes must share the same cookie to communicate
 // - Named actors for cross-node discovery via ctx.getActorByName()
 // - ActorRegistry module augmentation for typed getActorByName
+// - waitForCluster() for cluster readiness before sending messages
 // - Bidirectional ping-pong between actors on different nodes
 
 import { createSystem, createActor, type ActorRegistry } from "../../src";
@@ -89,12 +90,10 @@ async function main() {
       cookie: "my-cluster-secret",
     });
 
+    await system.waitForCluster();
+    console.log("[node1] Cluster ready! Spawning ping actor...\n");
     const ping = system.spawn(Ping, { name: "ping" });
-    console.log("[node1] Ping actor spawned, waiting for pong...\n");
-
-    setTimeout(() => {
-      ping.cast("start");
-    }, 3000);
+    ping.cast("start");
 
     process.on("SIGINT", async () => {
       console.log("\n[node1] Shutting down...");

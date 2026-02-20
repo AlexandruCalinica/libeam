@@ -49,6 +49,33 @@ export interface LocalConfig {
   supervision?: SupervisionConfig;
 }
 
+/**
+ * Options for waiting until the cluster reaches a ready state.
+ *
+ * Both `minMembers` and `nodes` can be specified simultaneously — the cluster
+ * is considered ready only when ALL conditions are met.
+ *
+ * @example
+ * ```typescript
+ * // Wait for at least 3 members
+ * await system.waitForCluster({ minMembers: 3 });
+ *
+ * // Wait for specific nodes
+ * await system.waitForCluster({ nodes: ["gateway", "worker-1"] });
+ *
+ * // Both conditions (AND)
+ * await system.waitForCluster({ minMembers: 3, nodes: ["gateway"], timeout: 15000 });
+ * ```
+ */
+export interface WaitForClusterOptions {
+  /** Wait until N total members (including self) have joined. Default: 2 */
+  minMembers?: number;
+  /** Wait for these specific node IDs to appear in the cluster */
+  nodes?: string[];
+  /** Timeout in ms. Rejects with TimeoutError if not met. Default: 30000 */
+  timeout?: number;
+}
+
 export interface DistributedConfig {
   type: "distributed";
   nodeId?: string;
@@ -64,6 +91,11 @@ export interface DistributedConfig {
   salt?: string;
   /** Custom gossip authenticator. Transport auth always uses cookie-derived CurveZMQ keys. */
   auth?: Authenticator;
+  /**
+   * Wait for cluster readiness during createSystem(). Calls waitForCluster() internally.
+   * If readiness is not achieved within the timeout, the system is shut down and createSystem rejects.
+   */
+  ready?: WaitForClusterOptions;
 }
 
 export interface ActorContext {

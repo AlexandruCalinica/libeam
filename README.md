@@ -1296,6 +1296,46 @@ interface ShutdownOptions {
 }
 ```
 
+## Cluster Readiness
+
+Wait for the cluster to form before spawning actors that depend on peer connectivity:
+
+```typescript
+const system = await createSystem({
+  type: "distributed",
+  port: 5000,
+  seedNodes: ["127.0.0.1:6002"],
+  cookie: "my-secret",
+});
+
+// Wait for at least one peer to join (default: minMembers=2, timeout=30s)
+await system.waitForCluster();
+
+// Wait for a specific number of members
+await system.waitForCluster({ minMembers: 3, timeout: 15000 });
+
+// Wait for specific nodes
+await system.waitForCluster({ nodes: ["gateway", "worker-1"] });
+
+// Both conditions must be met (AND)
+await system.waitForCluster({ minMembers: 3, nodes: ["gateway"] });
+```
+
+Or inline with system creation using the `ready` option:
+
+```typescript
+const system = await createSystem({
+  type: "distributed",
+  port: 5000,
+  seedNodes: ["127.0.0.1:6002"],
+  cookie: "my-secret",
+  ready: { minMembers: 3, timeout: 15000 },
+});
+// System is guaranteed to have 3 members when createSystem resolves
+```
+
+`waitForCluster` uses gossip-based membership detection. If the timeout is reached before conditions are met, a `TimeoutError` is thrown. For local (non-distributed) systems, `waitForCluster()` resolves immediately.
+
 ## Authentication
 
 Distributed systems can be secured with cookie-based authentication, inspired by Erlang's distribution cookie. When configured, nodes verify each other using HMAC-SHA256 signatures on gossip messages and CurveZMQ encryption on transport connections.

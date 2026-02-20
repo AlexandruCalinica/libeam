@@ -22,8 +22,77 @@ import {
   DistributedConfig,
   LocalConfig,
   TypedActorRef,
+  WaitForClusterOptions,
 } from "./types/functional";
+import { TimeoutError } from "./errors";
 import { v4 as uuidv4 } from "uuid";
+
+export function isClusterReady(
+  members: string[],
+  options: { minMembers?: number; nodes?: string[] },
+): boolean {
+  if (options.minMembers && members.length < options.minMembers) {
+    return false;
+  }
+  if (options.nodes && !options.nodes.every((n) => members.includes(n))) {
+    return false;
+  }
+  return true;
+}
+
+export async function waitForCluster(
+  cluster: Cluster,
+  options: WaitForClusterOptions = {},
+): Promise<void> {
+  const isDistributed = cluster instanceof DistributedCluster;
+
+  if (!isDistributed) {
+    if (!options.minMembers && (!options.nodes || options.nodes.length === 0)) {
+      return;
+    }
+    if (isClusterReady(cluster.getMembers(), options)) {
+      return;
+    }
+    throw new TimeoutError("waitForCluster", options.timeout ?? 30_000);
+  }
+
+  const minMembers = options.minMembers ?? 2;
+  const timeoutMs = options.timeout ?? 30_000;
+  const requiredNodes = options.nodes?.length ? options.nodes : undefined;
+  const effectiveOptions = { minMembers, nodes: requiredNodes };
+
+  if (isClusterReady(cluster.getMembers(), effectiveOptions)) {
+    return;
+  }
+
+  return new Promise<void>((resolve, reject) => {
+    let settled = false;
+
+    const cleanup = () => {
+      if (timer !== undefined) clearTimeout(timer);
+      cluster.removeListener!("member_join", onMemberJoin);
+    };
+
+    const onMemberJoin = () => {
+      if (settled) return;
+      if (isClusterReady(cluster.getMembers(), effectiveOptions)) {
+        settled = true;
+        cleanup();
+        resolve();
+      }
+    };
+
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(new TimeoutError("waitForCluster", timeoutMs));
+    }, timeoutMs);
+
+    // Must subscribe AFTER the synchronous check above to avoid race
+    cluster.on!("member_join", onMemberJoin);
+  });
+}
 
 const DEFAULT_GOSSIP_OPTIONS: GossipOptions = {
   gossipIntervalMs: 1000,
@@ -55,6 +124,8 @@ export interface System {
     name: K,
   ): Promise<ActorRefFrom<ActorRegistry[K]> | null>;
   getActorByName(name: string): Promise<ActorRef | null>;
+  /** Wait for the cluster to reach a ready state based on membership conditions */
+  waitForCluster(options?: WaitForClusterOptions): Promise<void>;
   /** Gracefully shut down the system */
   shutdown(): Promise<void>;
   /** The underlying transport layer */
@@ -105,6 +176,10 @@ class SystemImpl implements System {
   getActorByName(name: string): Promise<ActorRef | null>;
   getActorByName(name: string): Promise<ActorRef | null> {
     return this.system.getActorByName(name);
+  }
+
+  waitForCluster(options?: WaitForClusterOptions): Promise<void> {
+    return waitForCluster(this.cluster, options);
   }
 
   async shutdown(): Promise<void> {
@@ -275,7 +350,18 @@ async function createDistributedSystem(config: DistributedConfig): Promise<Syste
     await cluster.leave();
   };
 
-  return new SystemImpl(system, transport, cluster, registry, clusterLeave);
+  const systemImpl = new SystemImpl(system, transport, cluster, registry, clusterLeave);
+
+  if (config.ready) {
+    try {
+      await systemImpl.waitForCluster(config.ready);
+    } catch (err) {
+      await systemImpl.shutdown();
+      throw err;
+    }
+  }
+
+  return systemImpl;
 }
 
 /**

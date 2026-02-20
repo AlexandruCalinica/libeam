@@ -40,6 +40,7 @@ export {
   DistributedConfig,
   SupervisionConfig,
   GossipConfig,
+  WaitForClusterOptions,
   ActorRegistry,
   ActorBuilder,
   ActorDefinition,
