@@ -39,6 +39,7 @@ export class GossipProtocol extends EventEmitter {
     private readonly gossipUDP: GossipUDP,
     private readonly options: GossipOptions,
     private readonly auth?: Authenticator,
+    roles?: string[],
   ) {
     super();
     this.log = createLogger("GossipProtocol", nodeId).child({ gossipAddress });
@@ -50,6 +51,7 @@ export class GossipProtocol extends EventEmitter {
       gossipAddress: gossipAddress, // Store full address as string
       lastUpdated: Date.now(),
       status: "alive",
+      roles: roles?.length ? roles : undefined,
     };
     this.peers.set(this.self.id, this.self);
   }

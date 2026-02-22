@@ -21,6 +21,8 @@ export interface PeerState {
   lastUpdated: number;
   /** Status of the peer. Default: "alive" */
   status?: PeerStatus;
+  /** Roles declared by this node (e.g., ["gateway", "worker"]). */
+  roles?: string[];
 }
 
 /**
