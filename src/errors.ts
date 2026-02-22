@@ -110,6 +110,16 @@ export class PeerNotFoundError extends LibeamError {
   }
 }
 
+export class NoRoleMatchError extends LibeamError {
+  constructor(role: string, localNodeId?: string) {
+    const msg = localNodeId
+      ? `Local node "${localNodeId}" does not have role "${role}"`
+      : `No nodes in the cluster have role "${role}"`;
+    super(msg, "NO_ROLE_MATCH", { role, localNodeId });
+    this.name = "NoRoleMatchError";
+  }
+}
+
 /**
  * Error thrown when authentication fails.
  */

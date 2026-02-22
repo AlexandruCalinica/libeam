@@ -62,6 +62,7 @@ export interface SpawnOptions {
   name?: string;
   args?: any[];
   strategy?: PlacementStrategy;
+  role?: string;
 }
 
 export interface ShutdownOptions {
@@ -673,8 +674,8 @@ export class ActorSystem implements HealthCheckable {
       throw new SystemShuttingDownError("spawn actors");
     }
 
-    const { name, args, strategy = "local" } = options;
-    const targetNodeId = this.placementEngine.selectNode(strategy);
+    const { name, args, strategy = "local", role } = options;
+    const targetNodeId = this.placementEngine.selectNode(strategy, role);
 
     const instanceId = uuidv4();
     const actorId = new ActorId(targetNodeId, instanceId, name);

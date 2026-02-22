@@ -1,35 +1,43 @@
 // src/placement.ts
 
 import { Cluster } from './cluster';
-import { Actor } from './actor';
+import { NoRoleMatchError } from './errors';
 
 export type PlacementStrategy = 'local' | 'round-robin';
 
-/**
- * The placement engine is responsible for deciding which node an actor
- * should be spawned on.
- */
 export class PlacementEngine {
-  private roundRobinCounter = 0;
+  private roundRobinCounters = new Map<string, number>();
 
   constructor(private readonly cluster: Cluster) {}
 
-  /**
-   * Selects a node ID based on the given strategy.
-   * @param strategy The placement strategy to use.
-   * @returns The ID of the selected node.
-   */
-  selectNode(strategy: PlacementStrategy): string {
+  selectNode(strategy: PlacementStrategy, role?: string): string {
     switch (strategy) {
-      case 'local':
+      case 'local': {
+        if (role && this.cluster.getMembersByRole) {
+          const matching = this.cluster.getMembersByRole(role);
+          if (!matching.includes(this.cluster.nodeId)) {
+            throw new NoRoleMatchError(role, this.cluster.nodeId);
+          }
+        }
         return this.cluster.nodeId;
-      case 'round-robin':
-        const members = this.cluster.getMembers();
+      }
+      case 'round-robin': {
+        const members = role && this.cluster.getMembersByRole
+          ? this.cluster.getMembersByRole(role)
+          : this.cluster.getMembers();
+
         if (members.length === 0) {
+          if (role) {
+            throw new NoRoleMatchError(role);
+          }
           return this.cluster.nodeId;
         }
-        this.roundRobinCounter = (this.roundRobinCounter + 1) % members.length;
-        return members[this.roundRobinCounter];
+
+        const counterKey = role ?? '__all__';
+        const counter = (this.roundRobinCounters.get(counterKey) ?? -1) + 1;
+        this.roundRobinCounters.set(counterKey, counter);
+        return members[counter % members.length];
+      }
       default:
         throw new Error(`Unknown placement strategy: ${strategy}`);
     }
