@@ -317,6 +317,7 @@ async function createDistributedSystem(config: DistributedConfig): Promise<Syste
     gossipUDP,
     gossipOptions,
     gossipAuth ?? undefined,
+    config.roles,
   );
 
   // 3. Setup cluster (wraps gossip protocol)

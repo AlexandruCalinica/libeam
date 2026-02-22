@@ -96,6 +96,8 @@ export interface DistributedConfig {
    * If readiness is not achieved within the timeout, the system is shut down and createSystem rejects.
    */
   ready?: WaitForClusterOptions;
+  /** Roles this node fulfills (e.g., ["gateway", "worker"]). Propagated to peers via gossip. */
+  roles?: string[];
 }
 
 export interface ActorContext {
