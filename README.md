@@ -9,7 +9,7 @@ An Erlang/OTP-inspired actor system for TypeScript. Build distributed, fault-tol
 - **Location Transparency**: Actors communicate via `ActorRef` regardless of whether the target is local or remote
 - **Supervision**: Automatic crash handling with configurable restart strategies
 - **Distributed Clustering**: Gossip-based membership detection with automatic peer discovery
-- **Placement Strategies**: Control where actors are spawned (`local`, `round-robin`)
+- **Placement Strategies**: Control where actors are spawned (`local`, `round-robin`) with optional role-based filtering
 - **Transport Abstraction**: Pluggable transport layer (in-memory for testing, ZeroMQ for production)
 
 ## Elixir/OTP Parity
@@ -54,6 +54,7 @@ libeam implements the core primitives from Elixir/OTP, adapted for the Node.js r
 | Remote messaging | Transparent | Via `Transport` |
 | Registry | `Registry`, `:global` | `Registry`, `DistributedRegistry` |
 | Actor migration | Manual process migration | `system.migrate()` |
+| Node roles | Node groups / `pg` | `roles` config + `role` spawn option |
 
 ### Not Implemented (Not Needed in Node.js)
 
@@ -1094,12 +1095,17 @@ Control where actors are spawned:
 - `local`: Always spawn on the current node
 - `round-robin`: Distribute across cluster members
 
+Both strategies support an optional `role` filter. See [Node Roles](#node-roles) for details.
+
 ```typescript
 // Spawn locally
 system.spawn(MyActor, { strategy: "local" });
 
 // Distribute across nodes
 system.spawn(MyActor, { strategy: "round-robin" });
+
+// Distribute only across nodes with the "worker" role
+system.spawn(MyActor, { strategy: "round-robin", role: "worker" });
 ```
 
 ### Cluster Interface
@@ -1336,6 +1342,62 @@ const system = await createSystem({
 
 `waitForCluster` uses gossip-based membership detection. If the timeout is reached before conditions are met, a `TimeoutError` is thrown. For local (non-distributed) systems, `waitForCluster()` resolves immediately.
 
+## Node Roles
+
+Nodes can declare roles to support heterogeneous clusters. Roles are propagated via gossip and used during actor placement to ensure actors land on appropriate nodes.
+
+### Declaring Roles
+
+```typescript
+// This node is a gateway
+const gateway = await createSystem({
+  type: "distributed",
+  port: 5000,
+  seedNodes: [],
+  cookie: "my-secret",
+  roles: ["gateway"],
+});
+
+// This node is a worker
+const worker = await createSystem({
+  type: "distributed",
+  port: 5010,
+  seedNodes: ["127.0.0.1:5002"],
+  cookie: "my-secret",
+  roles: ["worker", "compute"],
+});
+```
+
+A node can have multiple roles. Roles are immutable — set once at startup and propagated to all peers via gossip.
+
+### Role-Based Placement
+
+The `role` option on `spawn()` filters candidate nodes before the placement strategy selects one:
+
+```typescript
+// Spawn on any node with the "worker" role (round-robin across workers)
+const ref = system.spawn(MyActor, { strategy: "round-robin", role: "worker" });
+
+// Assert the local node has the "gateway" role before spawning locally
+const ref = system.spawn(Router, { role: "gateway" });
+```
+
+If no nodes in the cluster have the required role, a `NoRoleMatchError` is thrown immediately.
+
+### Querying Roles
+
+The cluster interface exposes role-based membership queries:
+
+```typescript
+// Get all nodes with a specific role
+const workers = system.cluster.getMembersByRole("worker");
+// ["node-abc", "node-def"]
+```
+
+### How It Works
+
+Roles are stored in each node's gossip state (`PeerState.roles`) and propagated automatically via the existing gossip protocol. The placement engine filters `cluster.getMembersByRole(role)` before applying the selected strategy (`local` or `round-robin`). No additional network overhead — roles piggyback on the existing heartbeat cycle.
+
 ## Authentication
 
 Distributed systems can be secured with cookie-based authentication, inspired by Erlang's distribution cookie. When configured, nodes verify each other using HMAC-SHA256 signatures on gossip messages and CurveZMQ encryption on transport connections.
@@ -1484,6 +1546,7 @@ try {
 | `PeerNotFoundError` | `PEER_NOT_FOUND` | Peer node not known |
 | `ActorClassNotRegisteredError` | `ACTOR_CLASS_NOT_REGISTERED` | Actor class not registered for remote spawn |
 | `AuthenticationError` | `AUTHENTICATION_FAILED` | Node authentication failed |
+| `NoRoleMatchError` | `NO_ROLE_MATCH` | No nodes have the required role |
 | `ActorNotMigratableError` | `ACTOR_NOT_MIGRATABLE` | Actor doesn't implement `Migratable` |
 | `ActorHasChildrenError` | `ACTOR_HAS_CHILDREN` | Actor has child actors |
 

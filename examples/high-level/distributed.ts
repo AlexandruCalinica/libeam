@@ -88,6 +88,7 @@ async function main() {
       port: 5000,
       seedNodes: ["127.0.0.1:5012"],
       cookie: "my-cluster-secret",
+      roles: ["ping"],
     });
 
     await system.waitForCluster();
@@ -109,6 +110,7 @@ async function main() {
       port: 5010,
       seedNodes: ["127.0.0.1:5002"],
       cookie: "my-cluster-secret",
+      roles: ["pong"],
     });
 
     system.spawn(Pong, { name: "pong" });
