@@ -70,6 +70,13 @@ export class DistributedCluster
     return this.gossipProtocol.getLivePeers().find((p) => p.id === nodeId);
   }
 
+  getMembersByRole(role: string): string[] {
+    return this.gossipProtocol
+      .getLivePeers()
+      .filter((p) => p.roles?.includes(role))
+      .map((p) => p.id);
+  }
+
   /**
    * Returns health status of the cluster.
    */

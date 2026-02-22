@@ -35,6 +35,10 @@ export class LocalCluster extends EventEmitter implements Cluster, HealthCheckab
     return [{ id: this.nodeId, status: "healthy" }];
   }
 
+  getMembersByRole(_role: string): string[] {
+    return [this.nodeId];
+  }
+
   /**
    * Returns health status for the single-node cluster.
    */

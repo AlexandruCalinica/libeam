@@ -31,14 +31,9 @@ export interface Cluster {
    */
   getLivePeers?(): ClusterPeer[];
 
-  /**
-   * Register an event listener.
-   * Events: 'member_join', 'member_leave'
-   */
+  getMembersByRole?(role: string): string[];
+
   on?(event: string, listener: (...args: any[]) => void): this;
 
-  /**
-   * Remove an event listener.
-   */
   removeListener?(event: string, listener: (...args: any[]) => void): this;
 }
