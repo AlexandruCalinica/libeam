@@ -36,7 +36,7 @@ export class ZeroMQTransport implements Transport {
   private readonly pubAddress: string;
   private readonly bindAddress: string;
   private readonly log: Logger;
-  private readonly curveKeyPair?: { publicKey: string; secretKey: string };
+  private curveKeyPair?: { publicKey: string; secretKey: string };
 
   private rpcSocket?: zmq.Router;
   private pubSocket?: zmq.Publisher;
@@ -86,6 +86,59 @@ export class ZeroMQTransport implements Transport {
 
     this.runRpcLoop();
     this.runSubLoop();
+  }
+
+  async rotateCurveKeys(newKeyPair: { publicKey: string; secretKey: string }): Promise<void> {
+    this.log.info("Rotating CurveZMQ keys — recreating all sockets");
+    this.curveKeyPair = newKeyPair;
+
+    // 1. Close all existing sockets
+    if (this.rpcSocket) this.rpcSocket.close();
+    if (this.pubSocket) this.pubSocket.close();
+    if (this.subSocket) this.subSocket.close();
+    for (const conn of this.dealerConnections.values()) {
+      conn.dealer.close();
+    }
+    this.dealerConnections.clear();
+
+    // 2. Reject pending requests
+    for (const [, pending] of this.pendingRequests.entries()) {
+      clearTimeout(pending.timer);
+      pending.reject(new TransportError("Transport rotating keys", this.nodeId));
+    }
+    this.pendingRequests.clear();
+
+    // 3. Recreate server sockets with new keys
+    const curveServerOpts = {
+      curveServer: true,
+      curveSecretKey: this.curveKeyPair.secretKey,
+    };
+    this.rpcSocket = new zmq.Router({ ...curveServerOpts });
+    await this.rpcSocket.bind(this.rpcAddress);
+
+    this.pubSocket = new zmq.Publisher({ ...curveServerOpts });
+    await this.pubSocket.bind(this.pubAddress);
+
+    // 4. Recreate subscriber with new keys
+    const curveClientOpts = {
+      curveServerKey: this.curveKeyPair.publicKey,
+      curvePublicKey: this.curveKeyPair.publicKey,
+      curveSecretKey: this.curveKeyPair.secretKey,
+    };
+    this.subSocket = new zmq.Subscriber({ ...curveClientOpts });
+
+    // 5. Reconnect subscriber to known peers and re-subscribe to topics
+    for (const [, addresses] of this.peerAddresses) {
+      this.subSocket.connect(addresses.pub);
+    }
+    for (const topic of this.subscriptions.keys()) {
+      this.subSocket.subscribe(topic);
+    }
+
+    // 6. Restart async message loops
+    this.runRpcLoop();
+    this.runSubLoop();
+    this.log.info("CurveZMQ key rotation complete — sockets recreated");
   }
 
   async disconnect(): Promise<void> {
