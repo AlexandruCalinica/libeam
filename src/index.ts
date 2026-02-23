@@ -24,6 +24,7 @@ export * from "./heartbeat";
 export * from "./migration";
 export * from "./create_system";
 export * from "./create_actor";
+export * from "./process_group";
 export * from "./mailbox";
 export { AuthenticationError } from "./errors";
 export { AuthenticatedGossipMessage } from "./gossip";

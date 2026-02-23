@@ -11,6 +11,7 @@ import { GossipProtocol, GossipOptions } from "./gossip_protocol";
 import { DistributedCluster } from "./distributed_cluster";
 import { RegistrySync } from "./registry_sync";
 import { DistributedRegistry } from "./distributed_registry";
+import { ProcessGroupManager } from "./process_group";
 import { Transport } from "./transport";
 import { Cluster } from "./cluster";
 import { Registry } from "./registry";
@@ -129,6 +130,14 @@ export interface System {
   waitForCluster(options?: WaitForClusterOptions): Promise<void>;
   /** Gracefully shut down the system */
   shutdown(): Promise<void>;
+  /** Add an actor to a named process group */
+  joinGroup(group: string, ref: ActorRef): void;
+  /** Remove an actor from a named process group */
+  leaveGroup(group: string, ref: ActorRef): void;
+  /** Get all actors in a named process group */
+  getGroup(group: string): ActorRef[];
+  /** Broadcast a cast message to all actors in a process group */
+  broadcast(group: string, message: any): void;
   /** The underlying transport layer */
   readonly transport: Transport;
   /** The underlying cluster membership */
@@ -225,6 +234,22 @@ class SystemImpl implements System {
     // 4. Disconnect registry
     await this.registry.disconnect();
   }
+
+  joinGroup(group: string, ref: ActorRef): void {
+    this.system.joinGroup(group, ref);
+  }
+
+  leaveGroup(group: string, ref: ActorRef): void {
+    this.system.leaveGroup(group, ref);
+  }
+
+  getGroup(group: string): ActorRef[] {
+    return this.system.getGroup(group);
+  }
+
+  broadcast(group: string, message: any): void {
+    this.system.broadcast(group, message);
+  }
 }
 
 function createLocalSystem(config?: LocalConfig): System {
@@ -233,8 +258,10 @@ function createLocalSystem(config?: LocalConfig): System {
   const cluster = new LocalCluster(nodeId);
   const transport = new InMemoryTransport(nodeId);
   const registry = new LocalRegistry();
+  const processGroups = new ProcessGroupManager(cluster.nodeId, transport, cluster);
 
   transport.connect();
+  processGroups.connect();
 
   const system = new ActorSystem(
     cluster,
@@ -244,6 +271,7 @@ function createLocalSystem(config?: LocalConfig): System {
     undefined,
     config?.mailbox,
     config?.timeouts,
+    processGroups,
   );
   system.start();
 
@@ -369,6 +397,9 @@ async function createDistributedSystem(config: DistributedConfig): Promise<Syste
   });
 
   // 6. Create actor system
+  const processGroups = new ProcessGroupManager(nodeId, transport, cluster);
+  await processGroups.connect();
+
   const system = new ActorSystem(
     cluster,
     transport,
@@ -377,6 +408,7 @@ async function createDistributedSystem(config: DistributedConfig): Promise<Syste
     undefined,
     config.mailbox,
     config.timeouts,
+    processGroups,
   );
   await system.start();
 

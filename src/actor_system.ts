@@ -57,6 +57,7 @@ import { HealthCheckable, ComponentHealth } from "./health";
 import { BoundedMailbox, type MailboxConfig } from "./mailbox";
 import type { ActorDefinition } from "./types/functional";
 import { TypedActorRef } from "./types/functional";
+import { GroupMember, ProcessGroupManager } from "./process_group";
 
 export interface SpawnOptions {
   name?: string;
@@ -213,6 +214,7 @@ export class ActorSystem implements HealthCheckable {
   private readonly placementEngine: PlacementEngine;
   private readonly heartbeatManager: HeartbeatManager;
   private readonly timeouts: Required<SystemTimeouts>;
+  private readonly processGroups?: ProcessGroupManager;
   private readonly defaultMailboxConfig: MailboxConfig;
   private readonly log: Logger;
   private _isShuttingDown = false;
@@ -226,8 +228,9 @@ export class ActorSystem implements HealthCheckable {
     registry: Registry,
     supervisorOptions?: SupervisionOptions,
     heartbeatConfig?: Partial<HeartbeatConfig>,
-  defaultMailboxConfig?: MailboxConfig,
+    defaultMailboxConfig?: MailboxConfig,
     timeouts?: SystemTimeouts,
+    processGroups?: ProcessGroupManager,
   ) {
     this.id = cluster.nodeId;
     this.transport = transport;
@@ -251,6 +254,7 @@ export class ActorSystem implements HealthCheckable {
       heartbeatConfig,
     );
     this.timeouts = { ...DEFAULT_TIMEOUTS, ...(timeouts || {}) } as Required<SystemTimeouts>;
+    this.processGroups = processGroups;
     this.defaultMailboxConfig = defaultMailboxConfig ?? {};
 
     // Wire up heartbeat failure detection
@@ -382,6 +386,7 @@ export class ActorSystem implements HealthCheckable {
         }
 
         // Cleanup
+        this.processGroups?.leaveAll(id);
         this.actors.delete(id);
         this.mailboxes.delete(id);
         this.actorMetadata.delete(id);
@@ -614,6 +619,7 @@ export class ActorSystem implements HealthCheckable {
     }
     actor.context.timers.clear();
 
+    this.processGroups?.leaveAll(actorId);
     this.actors.delete(actorId);
     this.mailboxes.delete(actorId);
     this.actorMetadata.delete(actorId);
@@ -900,6 +906,36 @@ export class ActorSystem implements HealthCheckable {
 
     const actorId = new ActorId(location.nodeId, location.actorId, name);
     return new ActorRef(actorId, this);
+  }
+
+  joinGroup(group: string, ref: ActorRef): void {
+    if (!this.processGroups) return;
+    const member: GroupMember = {
+      nodeId: ref.id.systemId,
+      actorId: ref.id.id,
+      name: ref.id.name,
+    };
+    this.processGroups.join(group, member);
+  }
+
+  leaveGroup(group: string, ref: ActorRef): void {
+    if (!this.processGroups) return;
+    this.processGroups.leave(group, ref.id.id);
+  }
+
+  getGroup(group: string): ActorRef[] {
+    if (!this.processGroups) return [];
+    return this.processGroups.getMembers(group).map((member) => {
+      const actorId = new ActorId(member.nodeId, member.actorId, member.name);
+      return new ActorRef(actorId, this);
+    });
+  }
+
+  broadcast(group: string, message: any): void {
+    const members = this.getGroup(group);
+    for (const ref of members) {
+      ref.cast(message);
+    }
   }
 
   /**
@@ -2512,6 +2548,7 @@ export class ActorSystem implements HealthCheckable {
         await this.registry.unregister(name);
       }
       await Promise.resolve(actor.terminate());
+      this.processGroups?.leaveAll(id);
       this.actors.delete(id);
       this.mailboxes.delete(id);
       this.actorMetadata.delete(id);
@@ -2613,6 +2650,7 @@ export class ActorSystem implements HealthCheckable {
         await this.registry.unregister(name);
       }
       await Promise.resolve(actor.terminate());
+      this.processGroups?.leaveAll(id);
       this.actors.delete(id);
       this.mailboxes.delete(id);
       this.actorMetadata.delete(id);
@@ -4393,6 +4431,7 @@ export class ActorSystem implements HealthCheckable {
           instanceId,
         );
         if (!confirmed) {
+          this.processGroups?.leaveAll(instanceId);
           this.actors.delete(instanceId);
           this.mailboxes.delete(instanceId);
           this.actorMetadata.delete(instanceId);
