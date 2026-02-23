@@ -241,6 +241,9 @@ function createLocalSystem(config?: LocalConfig): System {
     transport,
     registry,
     config?.supervision,
+    undefined,
+    config?.mailbox,
+    config?.timeouts,
   );
   system.start();
 
@@ -371,6 +374,9 @@ async function createDistributedSystem(config: DistributedConfig): Promise<Syste
     transport,
     registry,
     config.supervision,
+    undefined,
+    config.mailbox,
+    config.timeouts,
   );
   await system.start();
 

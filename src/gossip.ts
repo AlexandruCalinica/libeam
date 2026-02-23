@@ -30,11 +30,16 @@ export interface PeerState {
  * It contains the sender's ID and its entire peer table.
  */
 export interface GossipMessage {
+  /** Protocol version for forward/backward compatibility. */
+  version?: number;
   /** The ID of the node sending this gossip message. */
   senderId: string;
   /** The sender's entire view of the peer table. */
   peers: PeerState[];
 }
+
+/** Protocol version for gossip messages. Increment when message format changes. */
+export const GOSSIP_PROTOCOL_VERSION = 1;
 
 /**
  * Represents an authenticated gossip message with optional HMAC and nonce.

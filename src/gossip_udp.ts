@@ -69,6 +69,7 @@ export class GossipUDP extends EventEmitter {
           }
 
           const gossipMessage: GossipMessage = {
+            version: decoded.version,
             senderId: decoded.senderId,
             peers: decoded.peers,
           };

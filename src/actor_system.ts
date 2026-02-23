@@ -48,21 +48,22 @@ import {
 import {
   ActorNotFoundError,
   ActorClassNotRegisteredError,
+  MailboxFullError,
   RegistryLookupError,
   SystemShuttingDownError,
   TimeoutError,
 } from "./errors";
 import { HealthCheckable, ComponentHealth } from "./health";
+import { BoundedMailbox, type MailboxConfig } from "./mailbox";
 import type { ActorDefinition } from "./types/functional";
 import { TypedActorRef } from "./types/functional";
-
-type Mailbox = any[];
 
 export interface SpawnOptions {
   name?: string;
   args?: any[];
   strategy?: PlacementStrategy;
   role?: string;
+  mailbox?: MailboxConfig;
 }
 
 export interface ShutdownOptions {
@@ -71,6 +72,21 @@ export interface ShutdownOptions {
   /** Whether to wait for mailboxes to drain before stopping. Default: true */
   drainMailboxes?: boolean;
 }
+
+export interface SystemTimeouts {
+  /** Timeout for remote watch/link setup requests. Default: 5000 */
+  remoteOperationTimeout?: number;
+  /** Timeout for migration rollback requests. Default: 5000 */
+  migrationRollbackTimeout?: number;
+  /** Default actor call timeout. Default: 5000 */
+  defaultCallTimeout?: number;
+}
+
+const DEFAULT_TIMEOUTS: Required<SystemTimeouts> = {
+  remoteOperationTimeout: 5000,
+  migrationRollbackTimeout: 5000,
+  defaultCallTimeout: 5000,
+};
 
 interface ActorMetadata {
   actorClass: new () => Actor;
@@ -166,7 +182,7 @@ interface RemoteParentInfo {
 export class ActorSystem implements HealthCheckable {
   readonly id: string;
   private readonly actors = new Map<string, Actor>();
-  private readonly mailboxes = new Map<string, Mailbox>();
+  private readonly mailboxes = new Map<string, BoundedMailbox>();
   private readonly actorMetadata = new Map<string, ActorMetadata>();
   private readonly actorClasses = new Map<string, new () => Actor>();
   /** Map from watchRef.id to WatchEntry */
@@ -196,6 +212,8 @@ export class ActorSystem implements HealthCheckable {
   private readonly registry: Registry;
   private readonly placementEngine: PlacementEngine;
   private readonly heartbeatManager: HeartbeatManager;
+  private readonly timeouts: Required<SystemTimeouts>;
+  private readonly defaultMailboxConfig: MailboxConfig;
   private readonly log: Logger;
   private _isShuttingDown = false;
   private _isRunning = false;
@@ -208,6 +226,8 @@ export class ActorSystem implements HealthCheckable {
     registry: Registry,
     supervisorOptions?: SupervisionOptions,
     heartbeatConfig?: Partial<HeartbeatConfig>,
+  defaultMailboxConfig?: MailboxConfig,
+    timeouts?: SystemTimeouts,
   ) {
     this.id = cluster.nodeId;
     this.transport = transport;
@@ -230,6 +250,8 @@ export class ActorSystem implements HealthCheckable {
       cluster,
       heartbeatConfig,
     );
+    this.timeouts = { ...DEFAULT_TIMEOUTS, ...(timeouts || {}) } as Required<SystemTimeouts>;
+    this.defaultMailboxConfig = defaultMailboxConfig ?? {};
 
     // Wire up heartbeat failure detection
     this.heartbeatManager.on("node_failed", (nodeId: string) => {
@@ -476,9 +498,15 @@ export class ActorSystem implements HealthCheckable {
             reservationId,
             actorName,
           } as MigrateRollbackRequest,
-          5000,
+          this.timeouts.migrationRollbackTimeout,
         )
-        .catch(() => {});
+        .catch((err) => {
+          this.log.error("Migration rollback request failed", undefined, {
+            reservationId,
+            targetNodeId,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        });
 
       this.injectMessages(location.actorId, pendingMessages);
       this.resumeMailbox(location.actorId);
@@ -517,9 +545,15 @@ export class ActorSystem implements HealthCheckable {
             reservationId,
             actorName,
           } as MigrateRollbackRequest,
-          5000,
+          this.timeouts.migrationRollbackTimeout,
         )
-        .catch(() => {});
+        .catch((err) => {
+          this.log.error("Migration rollback request failed", undefined, {
+            reservationId,
+            targetNodeId,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        });
 
       this.injectMessages(location.actorId, pendingMessages);
       this.resumeMailbox(location.actorId);
@@ -702,7 +736,8 @@ export class ActorSystem implements HealthCheckable {
       };
 
       this.actors.set(instanceId, actor);
-      this.mailboxes.set(instanceId, []);
+      const mailboxConfig = { ...this.defaultMailboxConfig, ...(options.mailbox ?? {}) };
+      this.mailboxes.set(instanceId, new BoundedMailbox(mailboxConfig));
       this.actorMetadata.set(instanceId, { actorClass, options });
 
       if (name) {
@@ -795,7 +830,8 @@ export class ActorSystem implements HealthCheckable {
     };
 
     this.actors.set(instanceId, actor);
-    this.mailboxes.set(instanceId, []);
+    const mailboxConfig = { ...this.defaultMailboxConfig, ...(options.mailbox ?? {}) };
+    this.mailboxes.set(instanceId, new BoundedMailbox(mailboxConfig));
     this.actorMetadata.set(instanceId, {
       actorClass,
       options,
@@ -994,7 +1030,7 @@ export class ActorSystem implements HealthCheckable {
           watcherActorId: watcherRef.id.id,
           watchedActorId,
         },
-        5000,
+        this.timeouts.remoteOperationTimeout,
       )
       .then((response: { success: boolean; alreadyDead?: boolean }) => {
         if (response.alreadyDead) {
@@ -1242,7 +1278,7 @@ export class ActorSystem implements HealthCheckable {
           linkedActorId: remoteActorId,
           trapExit: localActor.context.trapExit,
         },
-        5000,
+        this.timeouts.remoteOperationTimeout,
       )
       .then((response: { success: boolean; alreadyDead?: boolean }) => {
         if (response.alreadyDead) {
@@ -2630,7 +2666,16 @@ export class ActorSystem implements HealthCheckable {
           },
         };
 
-        mailbox.push(stashedMessage);
+        try {
+          const enqueued = mailbox.enqueue(stashedMessage);
+          if (!enqueued) {
+            clearTimeout(timer);
+            reject(new MailboxFullError());
+          }
+        } catch (err) {
+          clearTimeout(timer);
+          reject(err);
+        }
       });
     } else {
       // Remote actor
@@ -2655,7 +2700,13 @@ export class ActorSystem implements HealthCheckable {
       // Local actor
       const mailbox = this.mailboxes.get(id);
       if (mailbox) {
-        mailbox.push({ type: "cast", message });
+        try {
+          mailbox.enqueue({ type: "cast", message });
+        } catch (err) {
+          if (!(err instanceof MailboxFullError)) {
+            throw err;
+          }
+        }
       }
     } else {
       // Remote actor
@@ -3131,7 +3182,11 @@ export class ActorSystem implements HealthCheckable {
       };
 
       this.actors.set(childInstanceId, actor);
-      this.mailboxes.set(childInstanceId, []);
+      const mailboxConfig = {
+        ...this.defaultMailboxConfig,
+        ...(options?.mailbox ?? {}),
+      };
+      this.mailboxes.set(childInstanceId, new BoundedMailbox(mailboxConfig));
       this.actorMetadata.set(childInstanceId, {
         actorClass,
         options,
@@ -4047,7 +4102,7 @@ export class ActorSystem implements HealthCheckable {
     }
 
     if (mailbox.length > 0) {
-      const stashedMessage = mailbox.shift() as StashedMessage;
+      const stashedMessage = mailbox.dequeue()!;
 
       actor.context.currentMessage = stashedMessage;
 
@@ -4143,8 +4198,7 @@ export class ActorSystem implements HealthCheckable {
       await new Promise((r) => setTimeout(r, 5));
     }
 
-    const pendingMessages = [...mailbox];
-    mailbox.length = 0;
+    const pendingMessages = mailbox.drain();
 
     this.log.debug("Mailbox drained", {
       actorId,
@@ -4172,7 +4226,7 @@ export class ActorSystem implements HealthCheckable {
 
   getPendingMessages(actorId: string): StashedMessage[] {
     const mailbox = this.mailboxes.get(actorId);
-    return mailbox ? [...mailbox] : [];
+    return mailbox ? mailbox.toArray() : [];
   }
 
   private async _getStateWithTimeout(
@@ -4215,8 +4269,7 @@ export class ActorSystem implements HealthCheckable {
       }
     }
 
-    mailbox.length = 0;
-    mailbox.push(...remainingMessages);
+    mailbox.replaceWith(remainingMessages);
 
     return rejectedCount;
   }
@@ -4311,7 +4364,10 @@ export class ActorSystem implements HealthCheckable {
       };
 
       this.actors.set(instanceId, actor);
-      this.mailboxes.set(instanceId, []);
+      this.mailboxes.set(
+        instanceId,
+        new BoundedMailbox(this.defaultMailboxConfig),
+      );
       this.actorMetadata.set(instanceId, {
         actorClass,
         options: { name: actorName, args: initArgs },

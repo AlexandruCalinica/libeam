@@ -147,3 +147,14 @@ export class CookieRotationError extends LibeamError {
     this.name = "CookieRotationError";
   }
 }
+
+export class MailboxFullError extends LibeamError {
+  constructor(actorId?: string) {
+    super(
+      actorId ? `Mailbox full for actor ${actorId}` : "Mailbox is full",
+      "MAILBOX_FULL",
+      { actorId },
+    );
+    this.name = "MailboxFullError";
+  }
+}

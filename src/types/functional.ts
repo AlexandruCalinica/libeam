@@ -11,10 +11,11 @@ import {
   type TimerRef,
   type WatchRef,
 } from "../actor";
-import type { ActorSystem } from "../actor_system";
+import type { ActorSystem, SystemTimeouts } from "../actor_system";
 import type { SpawnOptions } from "../actor_system";
 import type { Authenticator } from "../auth";
 import type { GossipOptions } from "../gossip_protocol";
+import type { MailboxConfig } from "../mailbox";
 import type { SupervisionOptions } from "../supervisor";
 
 export type { InitContinue };
@@ -47,6 +48,10 @@ export interface LocalConfig {
   type?: "local";
   nodeId?: string;
   supervision?: SupervisionConfig;
+  /** Default mailbox configuration for all actors in this system */
+  mailbox?: MailboxConfig;
+  /** Configurable timeouts for actor operations */
+  timeouts?: SystemTimeouts;
 }
 
 /**
@@ -98,6 +103,10 @@ export interface DistributedConfig {
   ready?: WaitForClusterOptions;
   /** Roles this node fulfills (e.g., ["gateway", "worker"]). Propagated to peers via gossip. */
   roles?: string[];
+  /** Default mailbox configuration for all actors in this system */
+  mailbox?: MailboxConfig;
+  /** Configurable timeouts for actor operations */
+  timeouts?: SystemTimeouts;
 }
 
 

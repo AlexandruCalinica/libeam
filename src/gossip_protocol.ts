@@ -1,7 +1,7 @@
 // src/gossip_protocol.ts
 
 import type { Authenticator } from "./auth";
-import { GossipMessage, PeerState, PeerStatus } from "./gossip";
+import { GossipMessage, PeerState, PeerStatus, GOSSIP_PROTOCOL_VERSION } from "./gossip";
 
 // Re-export PeerState and PeerStatus for consumers of this module
 export { PeerState, PeerStatus } from "./gossip";
@@ -135,14 +135,18 @@ export class GossipProtocol extends EventEmitter {
       return this.gossipUDP
         .send(
           {
+            version: GOSSIP_PROTOCOL_VERSION,
             senderId: this.self.id,
             peers: this.getAllKnownPeers(),
           },
           host,
           port,
         )
-        .catch(() => {
-          // Ignore send errors during leave
+        .catch((err) => {
+          this.log.debug("Failed to send leave notification", {
+            peerId: peer.id,
+            error: err instanceof Error ? err.message : String(err),
+          });
         });
     });
 
@@ -205,6 +209,7 @@ export class GossipProtocol extends EventEmitter {
 
   private sendGossipMessage(host: string, port: number): void {
     const message: GossipMessage = {
+      version: GOSSIP_PROTOCOL_VERSION,
       senderId: this.self.id,
       peers: this.getAllKnownPeers(), // Send our entire view of ALL known peers
     };
@@ -218,6 +223,16 @@ export class GossipProtocol extends EventEmitter {
     message: GossipMessage,
     rinfo: dgram.RemoteInfo,
   ): void {
+    // Check protocol version compatibility
+    if (message.version !== undefined && message.version !== GOSSIP_PROTOCOL_VERSION) {
+      this.log.warn("Received gossip message with incompatible version", {
+        expected: GOSSIP_PROTOCOL_VERSION,
+        received: message.version,
+        from: `${rinfo.address}:${rinfo.port}`,
+      });
+      return;
+    }
+
     if (!this.auth && !this.hasWarnedOpenModeReceive) {
       this.hasWarnedOpenModeReceive = true;
       this.log.warn("Received gossip message without authentication configured", {
