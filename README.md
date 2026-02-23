@@ -1460,11 +1460,56 @@ const system = await createSystem({
 
 The `Authenticator` interface covers gossip message signing and verification (HMAC-SHA256). Transport-level security (encryption + authentication) is handled by CurveZMQ at the socket layer, driven by the cookie. See `src/auth.ts` for the full interface and `deriveKeys`, `z85Encode`, `z85Decode` utilities for advanced use cases.
 
+
+### Cookie Rotation
+
+Cookies can be rotated without restarting the cluster using the Consul-style keyring API. The rotation is operator-driven in three steps:
+
+```typescript
+const system = await createSystem({
+  type: "distributed",
+  port: 5000,
+  seedNodes: [],
+  cookie: "old-cluster-secret",
+});
+
+// Step 1: Install the new cookie on ALL nodes (gossip accepts both keys)
+system.keyring!.install("new-cluster-secret");
+
+// Step 2: Switch each node to the new cookie (recreates transport sockets)
+await system.keyring!.use();
+
+// Step 3: Remove the old cookie from the keyring on ALL nodes
+system.keyring!.remove();
+```
+
+**Recommended procedure:**
+
+1. **Install** the new cookie on every node. Order doesn't matter. After this step, gossip messages signed with either the old or new key are accepted.
+2. **Use** the new cookie on each node (sequentially or in parallel). This triggers a brief transport reconnection window (~milliseconds) as ZeroMQ sockets are recreated with the new CurveZMQ keys. In-flight RPC requests during `use()` will fail with a `TransportError` — callers should retry.
+3. **Remove** the old cookie from the keyring on every node. After this step, only the new key is accepted.
+
+**Behavior during rotation:**
+
+- Gossip continues uninterrupted during `install()` and `remove()`. Both keys are accepted.
+- Transport has a brief reconnection window during `use()`. Pending requests are rejected with `TransportError`.
+- Messages are delivered at-most-once. No duplicates are introduced by the rotation.
+- `keyring` is only available on distributed systems. Local systems have `system.keyring === undefined`.
+
+**Inspecting the keyring:**
+
+```typescript
+// List key fingerprints (SHA-256 hex of public key, never raw cookies)
+console.log(system.keyring!.list());
+// Before install: ["a1b2c3..."]
+// After install:  ["a1b2c3...", "d4e5f6..."]
+// After remove:   ["d4e5f6..."]
+```
+
 ### Known Limitations
 
 | Limitation | Details |
 |------------|---------|
-| Cookie rotation requires restart | All nodes must restart to change the cookie. No hot-swap mechanism. |
 | Gossip UDP is authenticated but not encrypted | HMAC-SHA256 proves identity but does not encrypt message payloads. Use network-level isolation (VPN/firewall) for defense in depth. |
 | CurveZMQ failures are silent | Wrong cookie = messages dropped with no error. Ensure all nodes share the same cookie. |
 | v2 auth is not wire-compatible with v1 | Nodes running v1 and v2 cannot communicate. Upgrade all nodes together. |
