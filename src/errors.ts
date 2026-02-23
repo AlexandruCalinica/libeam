@@ -133,3 +133,17 @@ export class AuthenticationError extends LibeamError {
     this.name = "AuthenticationError";
   }
 }
+
+/**
+ * Error thrown when a cookie rotation state transition is invalid.
+ */
+export class CookieRotationError extends LibeamError {
+  constructor(reason: string) {
+    super(
+      `Cookie rotation error: ${reason}`,
+      "COOKIE_ROTATION_ERROR",
+      { reason },
+    );
+    this.name = "CookieRotationError";
+  }
+}

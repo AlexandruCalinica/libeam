@@ -1,5 +1,6 @@
 import crypto from "crypto";
 import type { GossipMessage } from "./gossip";
+import { CookieRotationError } from "./errors";
 
 /**
  * A gossip message with authentication fields for HMAC verification
@@ -241,6 +242,106 @@ export class CookieAuthenticator implements Authenticator {
         this.nonceCache.delete(oldestKey);
       }
     }
+  }
+}
+
+/**
+ * SHA-256 fingerprint of a Z85-encoded public key.
+ * Returns hex-encoded hash for display purposes (never exposes raw secrets).
+ */
+export function fingerprint(z85PublicKey: string): string {
+  return crypto.createHash("sha256").update(z85PublicKey).digest("hex");
+}
+
+/**
+ * Keyring-based authenticator that supports cookie rotation without restart.
+ * Wraps a primary and optional secondary CookieAuthenticator.
+ *
+ * Rotation workflow (Consul-style):
+ *   1. install(newCookie) — add to keyring, dual-accept gossip HMAC
+ *   2. activate()          — swap primary, return new curveKeyPair for transport
+ *   3. remove()            — purge old key from keyring
+ *
+ * Implements the Authenticator interface so GossipUDP/GossipProtocol
+ * see no difference — the reference stays the same, only internal state changes.
+ */
+export class KeyringAuthenticator implements Authenticator {
+  private primary: CookieAuthenticator;
+  private secondary?: CookieAuthenticator;
+  private readonly salt: string;
+
+  constructor(cookie: string, options?: CookieAuthenticatorOptions) {
+    this.salt = options?.salt ?? "libeam-v2";
+    this.primary = new CookieAuthenticator(cookie, options);
+  }
+
+  /**
+   * Add a new cookie to the keyring. Does not change signing behavior —
+   * outgoing messages are still signed with the current primary key.
+   * Incoming messages are verified against both primary and secondary.
+   */
+  install(cookie: string): void {
+    if (this.secondary) {
+      throw new CookieRotationError(
+        "A pending cookie is already installed. Call activate() or remove() first.",
+      );
+    }
+    this.secondary = new CookieAuthenticator(cookie, { salt: this.salt });
+  }
+
+  /**
+   * Promote the installed cookie to primary. The previous primary becomes
+   * secondary (still accepted for verification during the grace window).
+   * Returns the new curveKeyPair for transport socket recreation.
+   */
+  activate(): CurveKeyPair {
+    if (!this.secondary) {
+      throw new CookieRotationError(
+        "No pending cookie installed. Call install() first.",
+      );
+    }
+    const oldPrimary = this.primary;
+    this.primary = this.secondary;
+    this.secondary = oldPrimary;
+    return this.primary.curveKeyPair;
+  }
+
+  /**
+   * Remove the secondary (old) cookie from the keyring.
+   * After this, only messages signed with the current primary key are accepted.
+   * Idempotent — safe to call when no secondary exists.
+   */
+  remove(): void {
+    this.secondary = undefined;
+  }
+
+  /**
+   * List SHA-256 fingerprints of installed keys (primary first, then secondary).
+   * Never exposes raw cookies or key material.
+   */
+  list(): string[] {
+    const keys = [fingerprint(this.primary.curveKeyPair.publicKey)];
+    if (this.secondary) {
+      keys.push(fingerprint(this.secondary.curveKeyPair.publicKey));
+    }
+    return keys;
+  }
+
+  /** Current primary curve keypair for transport. */
+  get curveKeyPair(): CurveKeyPair {
+    return this.primary.curveKeyPair;
+  }
+
+  // --- Authenticator interface ---
+
+  signGossip(message: GossipMessage): AuthenticatedGossipMessage {
+    return this.primary.signGossip(message);
+  }
+
+  verifyGossip(message: AuthenticatedGossipMessage): boolean {
+    if (this.primary.verifyGossip(message)) return true;
+    if (this.secondary?.verifyGossip(message)) return true;
+    return false;
   }
 }
 
