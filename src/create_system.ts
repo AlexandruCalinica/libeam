@@ -1,6 +1,6 @@
 import { Actor, ActorRef } from "./actor";
 import { ActorSystem, SpawnOptions } from "./actor_system";
-import { CookieAuthenticator } from "./auth";
+import { CookieAuthenticator, KeyringAuthenticator } from "./auth";
 import type { Authenticator, CurveKeyPair } from "./auth";
 import { LocalCluster } from "./local_cluster";
 import { InMemoryTransport } from "./in_memory_transport";
@@ -24,6 +24,7 @@ import {
   TypedActorRef,
   WaitForClusterOptions,
 } from "./types/functional";
+import type { Keyring } from "./types/functional";
 import { TimeoutError } from "./errors";
 import { v4 as uuidv4 } from "uuid";
 
@@ -138,19 +139,46 @@ export interface System {
   readonly system: ActorSystem;
   /** The node ID */
   readonly nodeId: string;
+  /** Keyring for cookie rotation. Only available on distributed systems. */
+  readonly keyring?: Keyring;
 }
 
+class KeyringImpl implements Keyring {
+  constructor(
+    private readonly keyringAuth: KeyringAuthenticator,
+    private readonly zmqTransport: ZeroMQTransport,
+  ) {}
+
+  install(cookie: string): void {
+    this.keyringAuth.install(cookie);
+  }
+
+  async use(): Promise<void> {
+    const newKeyPair = this.keyringAuth.activate();
+    await this.zmqTransport.rotateCurveKeys(newKeyPair);
+  }
+
+  remove(): void {
+    this.keyringAuth.remove();
+  }
+
+  list(): string[] {
+    return this.keyringAuth.list();
+  }
+}
 class SystemImpl implements System {
   readonly nodeId: string;
-
+  readonly keyring?: Keyring;
   constructor(
     readonly system: ActorSystem,
     readonly transport: Transport,
     readonly cluster: Cluster,
     readonly registry: Registry,
     private readonly clusterLeave?: () => Promise<void>,
+    keyring?: Keyring,
   ) {
     this.nodeId = system.id;
+    this.keyring = keyring;
   }
 
   spawn<
@@ -222,32 +250,31 @@ function createLocalSystem(config?: LocalConfig): System {
 interface ResolvedAuth {
   gossipAuth: Authenticator | null;
   curveKeyPair: CurveKeyPair | null;
+  keyringAuth: KeyringAuthenticator | null;
 }
-
 function resolveAuth(config: DistributedConfig, nodeId: string): ResolvedAuth {
   const cookie = config.cookie ?? process.env.LIBEAM_COOKIE;
   const salt = config.salt ?? "libeam-v2";
   const log = createLogger("createSystem", nodeId);
-
   if (cookie) {
-    const cookieAuth = new CookieAuthenticator(cookie, { salt });
+    const keyringAuth = new KeyringAuthenticator(cookie, { salt });
     return {
-      gossipAuth: config.auth ?? cookieAuth,
-      curveKeyPair: cookieAuth.curveKeyPair,
+      gossipAuth: config.auth ?? keyringAuth,
+      curveKeyPair: keyringAuth.curveKeyPair,
+      keyringAuth,
     };
   }
-
   if (config.auth) {
     log.warn(
       "Custom auth provided without cookie. Transport will run WITHOUT encryption.",
     );
-    return { gossipAuth: config.auth, curveKeyPair: null };
+    return { gossipAuth: config.auth, curveKeyPair: null, keyringAuth: null };
   }
 
   log.warn(
     "Distributed system starting WITHOUT authentication. Set cookie via createSystem({ cookie: '...' }) or LIBEAM_COOKIE env var.",
   );
-  return { gossipAuth: null, curveKeyPair: null };
+  return { gossipAuth: null, curveKeyPair: null, keyringAuth: null };
 }
 
 async function createDistributedSystem(config: DistributedConfig): Promise<System> {
@@ -274,7 +301,7 @@ async function createDistributedSystem(config: DistributedConfig): Promise<Syste
     throw new Error("Distributed config requires either 'port' or 'ports'");
   }
 
-  const { gossipAuth, curveKeyPair } = resolveAuth(config, nodeId);
+  const { gossipAuth, curveKeyPair, keyringAuth } = resolveAuth(config, nodeId);
 
   if (curveKeyPair) {
     const zmq = await import("zeromq");
@@ -351,7 +378,8 @@ async function createDistributedSystem(config: DistributedConfig): Promise<Syste
     await cluster.leave();
   };
 
-  const systemImpl = new SystemImpl(system, transport, cluster, registry, clusterLeave);
+  const keyring = keyringAuth ? new KeyringImpl(keyringAuth, transport) : undefined;
+  const systemImpl = new SystemImpl(system, transport, cluster, registry, clusterLeave, keyring);
 
   if (config.ready) {
     try {

@@ -100,6 +100,24 @@ export interface DistributedConfig {
   roles?: string[];
 }
 
+
+/**
+ * Operator-facing API for cookie rotation without restart.
+ * Only available on distributed systems (undefined on local).
+ *
+ * Workflow: install(newCookie) on all nodes → use() on each node → remove() on all nodes.
+ */
+export interface Keyring {
+  /** Add a new cookie to the keyring. Gossip accepts both old and new keys. No transport change. */
+  install(cookie: string): void;
+  /** Switch to the installed cookie. Recreates transport sockets (brief reconnection window). */
+  use(): Promise<void>;
+  /** Remove the old cookie from the keyring. Only the active primary remains. */
+  remove(): void;
+  /** List key fingerprints (SHA-256 hex strings). Never exposes raw cookies. */
+  list(): string[];
+}
+
 export interface ActorContext {
   self: ActorRef;
   parent?: ActorRef;

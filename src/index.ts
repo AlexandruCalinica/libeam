@@ -34,6 +34,8 @@ export {
   z85Encode,
   z85Decode,
   CurveKeyPair,
+  KeyringAuthenticator,
+  fingerprint,
 } from "./auth";
 export {
   LocalConfig,
@@ -41,6 +43,7 @@ export {
   SupervisionConfig,
   GossipConfig,
   WaitForClusterOptions,
+  Keyring,
   ActorRegistry,
   ActorBuilder,
   ActorDefinition,
