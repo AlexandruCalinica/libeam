@@ -56,7 +56,8 @@ libeam implements the core primitives from Elixir/OTP, adapted for the Node.js r
 | Remote messaging | Transparent | Via `Transport` |
 | Registry | `Registry`, `:global` | `Registry`, `DistributedRegistry` |
 | Actor migration | Manual process migration | `system.migrate()` |
-| Node roles | Node groups / `pg` | `roles` config + `role` spawn option |
+| Node roles | Node profiles | `roles` config + `role` spawn option |
+| Process groups | `pg` | `joinGroup()`, `getGroup()`, `broadcast()` |
 
 ### Not Implemented (Not Needed in Node.js)
 
@@ -1460,6 +1461,65 @@ const workers = system.cluster.getMembersByRole("worker");
 ### How It Works
 
 Roles are stored in each node's gossip state (`PeerState.roles`) and propagated automatically via the existing gossip protocol. The placement engine filters `cluster.getMembersByRole(role)` before applying the selected strategy (`local` or `round-robin`). No additional network overhead — roles piggyback on the existing heartbeat cycle.
+
+## Process Groups
+
+Process groups provide named, dynamic groupings of actors. Any actor can join or leave groups at runtime, and you can broadcast messages to all members of a group. Inspired by Erlang's `pg` module.
+
+### Basic Usage
+
+```typescript
+import { createSystem, createActor } from "libeam";
+
+const Worker = createActor((ctx, self, id: string) => {
+  return self
+    .onCall("id", () => id)
+    .onCast("work", (task: string) => {
+      console.log(`Worker ${id} processing: ${task}`);
+    });
+});
+
+const system = createSystem();
+
+const w1 = system.spawn(Worker, { args: ["a"] });
+const w2 = system.spawn(Worker, { args: ["b"] });
+const w3 = system.spawn(Worker, { args: ["c"] });
+
+// Add actors to a group
+system.joinGroup("workers", w1);
+system.joinGroup("workers", w2);
+system.joinGroup("workers", w3);
+
+// An actor can be in multiple groups
+system.joinGroup("priority", w1);
+
+// Get all members of a group
+const members = system.getGroup("workers"); // [ActorRef, ActorRef, ActorRef]
+
+// Broadcast a cast message to all members
+system.broadcast("workers", { method: "work", args: ["job-42"] });
+
+// Remove an actor from a group
+system.leaveGroup("workers", w2);
+
+// Groups are cleaned up automatically when actors stop
+await system.stop(w1); // removed from "workers" and "priority"
+```
+
+### API
+
+- `joinGroup(group, ref): void` — Add an actor to a named group. Idempotent — joining the same group twice has no effect.
+- `leaveGroup(group, ref): void` — Remove an actor from a group. Safe to call even if the actor is not in the group.
+- `getGroup(group): ActorRef[]` — Get all actor refs in a group. Returns `[]` for unknown groups.
+- `broadcast(group, message): void` — Send a cast message to every actor in the group.
+
+### Behavior
+
+- **Auto-cleanup**: When an actor is stopped, it is automatically removed from all groups.
+- **Distributed**: Group membership changes are propagated across nodes via the transport pub/sub layer. When a node leaves the cluster, all its members are removed from all groups.
+- **Idempotent joins**: Calling `joinGroup` with the same actor and group multiple times is safe — only one membership entry is stored.
+
+See `test/process_group.test.ts` for more examples.
 
 ## Authentication
 
