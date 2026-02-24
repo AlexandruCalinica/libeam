@@ -38,6 +38,7 @@ libeam implements the core primitives from Elixir/OTP, adapted for the Node.js r
 | one-for-all | Yes | Yes |
 | rest-for-one | Yes | Yes |
 | Max restarts | Yes | Yes |
+| Dynamic supervisors | `DynamicSupervisor` | `DynamicSupervisor` |
 | **Process Features** |
 | Links | `Process.link/1` | `link()` |
 | Monitors | `Process.monitor/1` | `watch()` |
@@ -49,6 +50,7 @@ libeam implements the core primitives from Elixir/OTP, adapted for the Node.js r
 | Count children | `Supervisor.count_children/1` | `countChildren()` |
 | **Abstractions** |
 | Agent | `Agent` | `Agent` |
+| DynamicSupervisor | `DynamicSupervisor` | `DynamicSupervisor` |
 | **Distribution** |
 | Cluster membership | `:net_kernel` | `Cluster`, `GossipProtocol` |
 | Remote messaging | Transparent | Via `Transport` |
@@ -866,6 +868,67 @@ await counter.stop();
 
 See `test/agent.test.ts` for more examples.
 
+### DynamicSupervisor
+
+On-demand supervised child spawning. Unlike static supervision trees where children are defined at init time, a DynamicSupervisor starts with zero children and allows adding them at runtime. All children are supervised with a one-for-one strategy.
+
+```typescript
+import { DynamicSupervisor } from "libeam";
+
+// Start a dynamic supervisor
+const dynSup = DynamicSupervisor.start(system);
+
+// With options
+const dynSup = DynamicSupervisor.start(system, {
+  maxChildren: 100,  // Cap child count (default: Infinity)
+  maxRestarts: 3,    // Per-child restart limit (default: 3)
+  periodMs: 5000,    // Restart counting window (default: 5000)
+});
+
+// Named supervisor
+const dynSup = DynamicSupervisor.start(system, {}, { name: "worker-pool" });
+
+// Start children on demand
+const workerRef = await dynSup.startChild(WorkerActor, { args: ["job-1"] });
+
+// Functional actors return TypedActorRef with full type inference
+const counter = await dynSup.startChild(Counter, { args: [0] });
+await counter.call("get");       // fully typed!
+counter.cast("set", 42);         // fully typed!
+
+// Inspect children
+const children = await dynSup.whichChildren();
+// [{ ref: ActorRef, className: "WorkerActor", name?: string }]
+
+const counts = await dynSup.countChildren();
+// { specs: 2, active: 2 }
+
+// Terminate a specific child
+await dynSup.terminateChild(workerRef); // true if found, false otherwise
+
+// Stop supervisor (cascades to all children)
+await dynSup.stop();
+```
+
+**Methods:**
+
+- `DynamicSupervisor.start(system, options?, spawnOptions?): DynamicSupervisor` - Create a supervisor
+- `startChild(actorClass, options?): Promise<ActorRef | TypedActorRef>` - Spawn a supervised child
+- `terminateChild(ref): Promise<boolean>` - Stop a child by ref
+- `whichChildren(): Promise<ChildInfo[]>` - List active children with metadata
+- `countChildren(): Promise<ChildCounts>` - Get child count statistics
+- `stop(): Promise<void>` - Stop supervisor and all children
+- `getRef(): ActorRef` - Access underlying actor reference
+
+**Supervision behavior:**
+
+- Children that crash are automatically restarted (one-for-one)
+- If a child exceeds `maxRestarts` within `periodMs`, it is stopped permanently
+- `startChild` throws `MaxChildrenError` when the `maxChildren` limit is reached
+- Stopping the supervisor cascades to all children (depth-first termination)
+
+See `test/dynamic_supervisor.test.ts` for more examples.
+
 ### ActorSystem
 
 Manages actor lifecycle on a node.
@@ -1594,6 +1657,7 @@ try {
 | `NoRoleMatchError` | `NO_ROLE_MATCH` | No nodes have the required role |
 | `ActorNotMigratableError` | `ACTOR_NOT_MIGRATABLE` | Actor doesn't implement `Migratable` |
 | `ActorHasChildrenError` | `ACTOR_HAS_CHILDREN` | Actor has child actors |
+| `MaxChildrenError` | `MAX_CHILDREN` | DynamicSupervisor child limit reached |
 
 ## Health Checks
 
