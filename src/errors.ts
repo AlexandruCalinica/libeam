@@ -158,3 +158,17 @@ export class MailboxFullError extends LibeamError {
     this.name = "MailboxFullError";
   }
 }
+
+/**
+ * Error thrown when a DynamicSupervisor has reached its maxChildren limit.
+ */
+export class MaxChildrenError extends LibeamError {
+  constructor(maxChildren: number) {
+    super(
+      `DynamicSupervisor has reached the maximum number of children (${maxChildren})`,
+      "MAX_CHILDREN",
+      { maxChildren },
+    );
+    this.name = "MaxChildrenError";
+  }
+}
