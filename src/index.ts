@@ -27,6 +27,7 @@ export * from "./create_actor";
 export * from "./process_group";
 export * from "./mailbox";
 export * from "./dynamic_supervisor";
+export * from "./gen_stage";
 export { AuthenticationError } from "./errors";
 export { AuthenticatedGossipMessage } from "./gossip";
 export {
