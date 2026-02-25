@@ -1003,6 +1003,54 @@ await consumer.subscribe(multiplier.getRef(), { maxDemand: 50 });
 - `maxDemand` — Max events in flight per subscription (default: 1000)
 - `minDemand` — Threshold to request more events (default: 75% of maxDemand)
 - `cancel` — Cancel behavior: `"permanent"` | `"transient"` | `"temporary"` (default)
+- `partition` — Partition to subscribe to (required for PartitionDispatcher)
+
+**Dispatcher Types:**
+
+Producers can be configured with different dispatch strategies via `ProducerOptions.dispatcher`:
+
+| Dispatcher | Description | Use Case |
+|------------|-------------|----------|
+| `{ type: "demand" }` | Sends to consumer with highest pending demand (default) | Work pools, load balancing |
+| `{ type: "broadcast" }` | Sends all events to all consumers | Event buses, audit logging, fan-out |
+| `{ type: "partition", partitions: N, hash? }` | Routes events by hash to fixed partitions | Ordered processing per key, sharding |
+
+```typescript
+// Default: DemandDispatcher (highest-demand-first)
+const producer = Producer.start(system, callbacks);
+
+// BroadcastDispatcher: all consumers get all events
+const producer = Producer.start(system, callbacks, {
+  dispatcher: { type: "broadcast" },
+});
+
+// PartitionDispatcher: hash-based routing
+const producer = Producer.start(system, callbacks, {
+  dispatcher: {
+    type: "partition",
+    partitions: 4,
+    hash: (event) => event.userId % 4,  // route by user ID
+  },
+});
+
+// Consumers subscribe to specific partitions
+await consumer0.subscribe(producer.getRef(), { maxDemand: 10, partition: 0 });
+await consumer1.subscribe(producer.getRef(), { maxDemand: 10, partition: 1 });
+```
+
+**BroadcastDispatcher behavior:**
+
+- All consumers receive the same events (fan-out)
+- Demand = `min(all consumer demands)` — slowest consumer throttles the pipeline
+- New subscriber joining pauses dispatch until it sends demand
+
+**PartitionDispatcher behavior:**
+
+- One consumer per partition (subscribing to a taken partition throws)
+- Hash function maps each event to a partition: `(event) => partitionIndex | null`
+- Returning `null` from hash discards the event
+- Events for partitions with no consumer are buffered per-partition
+- Default hash: modulo for numbers, djb2 for strings, `event.key` for objects
 
 **Back-pressure behavior:**
 
@@ -1010,7 +1058,7 @@ await consumer.subscribe(multiplier.getRef(), { maxDemand: 50 });
 - When pending demand drops to `minDemand`, consumer automatically re-asks
 - Producer never emits more events than total demand from all consumers
 - Excess events are buffered in the producer (configurable `bufferSize`, default: 10000)
-- Multiple consumers receive events via DemandDispatcher (highest-demand-first)
+- Multiple consumers receive events via the configured dispatcher
 
 See `test/gen_stage.test.ts` for more examples.
 

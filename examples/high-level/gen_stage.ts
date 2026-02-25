@@ -4,9 +4,9 @@
 // Run: npx tsx examples/high-level/gen_stage.ts
 //
 // This example shows:
-// - Producer emitting sequential numbers on demand
-// - ProducerConsumer transforming events (multiply by 10)
-// - Consumer receiving and printing events
+// - DemandDispatcher: default highest-demand-first routing
+// - BroadcastDispatcher: all consumers get all events
+// - PartitionDispatcher: hash-based routing to specific consumers
 // - 3-stage pipeline: Producer → Multiplier → Consumer
 // - Back-pressure: consumers control event flow via demand
 //
@@ -23,35 +23,29 @@ async function main() {
   const system = createSystem();
 
   try {
-    // --- Stage 1: Producer ---
-    // Generates sequential numbers on demand.
-    // handleDemand(demand, state) returns [events, newState].
-    console.log("--- Setting up 3-stage pipeline ---\n");
-    console.log("  Producer (numbers) → Multiplier (×10) → Consumer (print)\n");
+    // ============================================================
+    // Part 1: DemandDispatcher (default) — 3-stage pipeline
+    // ============================================================
+    console.log("--- Part 1: DemandDispatcher (3-stage pipeline) ---\n");
+    console.log("  Producer (numbers) → Multiplier (×10) → Consumer\n");
 
     const producer = Producer.start(system.system, {
-      init: () => 0, // state = next number to emit
+      init: () => 0,
       handleDemand: (demand, counter) => {
         const events = Array.from({ length: demand }, (_, i) => counter + i);
         return [events, counter + demand];
       },
     });
 
-    // --- Stage 2: ProducerConsumer (transformer) ---
-    // Receives events from upstream, transforms them, emits downstream.
-    // handleEvents(events, from, state) returns [outputEvents, newState].
     const multiplier = ProducerConsumer.start(system.system, {
-      init: () => 10, // multiplication factor
+      init: () => 10,
       handleEvents: (events, _from, factor) => {
         const transformed = events.map((n: number) => n * factor);
         return [transformed, factor];
       },
     });
 
-    // --- Stage 3: Consumer ---
-    // Receives and processes events. handleEvents returns new state.
     const received: number[] = [];
-
     const consumer = Consumer.start(system.system, {
       handleEvents: (events, _from, state) => {
         received.push(...events);
@@ -59,49 +53,108 @@ async function main() {
       },
     });
 
-    // --- Wire the pipeline ---
-    // Subscribe creates a demand link: consumer → producer.
-    // maxDemand: max events in flight per subscription.
-    // minDemand: when pending demand drops to this, consumer re-asks.
-    console.log("--- Subscribing stages ---\n");
-
-    await multiplier.subscribe(producer.getRef(), {
-      maxDemand: 10,
-      minDemand: 5,
-    });
-
-    await consumer.subscribe(multiplier.getRef(), {
-      maxDemand: 10,
-      minDemand: 5,
-    });
-
-    // Let the pipeline process for a bit
+    await multiplier.subscribe(producer.getRef(), { maxDemand: 10, minDemand: 5 });
+    await consumer.subscribe(multiplier.getRef(), { maxDemand: 10, minDemand: 5 });
     await new Promise((r) => setTimeout(r, 200));
 
-    // --- Results ---
-    console.log("--- Results ---\n");
-    console.log(`  Total events received: ${received.length}`);
-    console.log(`  First 10 events: [${received.slice(0, 10).join(", ")}]`);
-    console.log(`  Expected first 10: [0, 10, 20, 30, 40, 50, 60, 70, 80, 90]`);
-    console.log(`  (Original numbers 0-9 multiplied by 10)\n`);
+    console.log(`  Total events: ${received.length}`);
+    console.log(`  First 10: [${received.slice(0, 10).join(", ")}]`);
+    console.log(`  Expected: [0, 10, 20, 30, 40, 50, 60, 70, 80, 90]`);
+    const correct = received.slice(0, 10).every((v, i) => v === [0, 10, 20, 30, 40, 50, 60, 70, 80, 90][i]);
+    console.log(`  Correct: ${correct}`);
 
-    // Verify correctness
-    const first10 = received.slice(0, 10);
-    const expected = [0, 10, 20, 30, 40, 50, 60, 70, 80, 90];
-    const correct = first10.every((v, i) => v === expected[i]);
-    console.log(`  Pipeline correct: ${correct}`);
-
-    // --- Demonstrate back-pressure ---
-    console.log("\n--- Back-pressure ---\n");
-    console.log(`  maxDemand=10 means consumer asks for 10 at a time`);
-    console.log(`  minDemand=5 means consumer re-asks when only 5 pending`);
-    console.log(`  Producer never emits more than total demand from all consumers`);
-    console.log(`  → Fast producer cannot overwhelm slow consumer`);
-
-    // Clean up stages
     await consumer.stop();
     await multiplier.stop();
     await producer.stop();
+
+    // ============================================================
+    // Part 2: BroadcastDispatcher — all consumers get all events
+    // ============================================================
+    console.log("\n--- Part 2: BroadcastDispatcher (fan-out) ---\n");
+    console.log("  Producer → [Consumer A, Consumer B] (both get same events)\n");
+
+    const broadcastProducer = Producer.start(system.system, {
+      init: () => 0,
+      handleDemand: (demand, counter) => {
+        const events = Array.from({ length: demand }, (_, i) => counter + i);
+        return [events, counter + demand];
+      },
+    }, { dispatcher: { type: "broadcast" } });
+
+    const bucketA: number[] = [];
+    const bucketB: number[] = [];
+
+    const consumerA = Consumer.start(system.system, {
+      handleEvents: (events, _from, state) => { bucketA.push(...events); return state; },
+    });
+    const consumerB = Consumer.start(system.system, {
+      handleEvents: (events, _from, state) => { bucketB.push(...events); return state; },
+    });
+
+    // Both subscribe — demand = min(10, 10) = 10
+    await Promise.all([
+      consumerA.subscribe(broadcastProducer.getRef(), { maxDemand: 10, minDemand: 5 }),
+      consumerB.subscribe(broadcastProducer.getRef(), { maxDemand: 10, minDemand: 5 }),
+    ]);
+    await new Promise((r) => setTimeout(r, 150));
+
+    console.log(`  Consumer A received: ${bucketA.length} events`);
+    console.log(`  Consumer B received: ${bucketB.length} events`);
+    const sameEvents = bucketA.slice(0, 10).every((v, i) => v === bucketB[i]);
+    console.log(`  Same events: ${sameEvents}`);
+    console.log(`  First 5 (A): [${bucketA.slice(0, 5).join(", ")}]`);
+    console.log(`  First 5 (B): [${bucketB.slice(0, 5).join(", ")}]`);
+
+    await consumerA.stop();
+    await consumerB.stop();
+    await broadcastProducer.stop();
+
+    // ============================================================
+    // Part 3: PartitionDispatcher — hash-based routing
+    // ============================================================
+    console.log("\n--- Part 3: PartitionDispatcher (sharding) ---\n");
+    console.log("  Producer → [Partition 0 (evens), Partition 1 (odds)]\n");
+
+    const partProducer = Producer.start(system.system, {
+      init: () => 0,
+      handleDemand: (demand, counter) => {
+        const events = Array.from({ length: demand }, (_, i) => counter + i);
+        return [events, counter + demand];
+      },
+    }, {
+      dispatcher: {
+        type: "partition",
+        partitions: 2,
+        hash: (event: number) => event % 2, // even→0, odd→1
+      },
+    });
+
+    const evens: number[] = [];
+    const odds: number[] = [];
+
+    const evenConsumer = Consumer.start(system.system, {
+      handleEvents: (events, _from, state) => { evens.push(...events); return state; },
+    });
+    const oddConsumer = Consumer.start(system.system, {
+      handleEvents: (events, _from, state) => { odds.push(...events); return state; },
+    });
+
+    await evenConsumer.subscribe(partProducer.getRef(), { maxDemand: 10, minDemand: 5, partition: 0 });
+    await oddConsumer.subscribe(partProducer.getRef(), { maxDemand: 10, minDemand: 5, partition: 1 });
+    await new Promise((r) => setTimeout(r, 150));
+
+    console.log(`  Partition 0 (evens): ${evens.length} events`);
+    console.log(`  Partition 1 (odds):  ${odds.length} events`);
+    console.log(`  First 5 evens: [${evens.slice(0, 5).join(", ")}]`);
+    console.log(`  First 5 odds:  [${odds.slice(0, 5).join(", ")}]`);
+    const allEvensCorrect = evens.every((n) => n % 2 === 0);
+    const allOddsCorrect = odds.every((n) => n % 2 === 1);
+    console.log(`  All evens correct: ${allEvensCorrect}`);
+    console.log(`  All odds correct: ${allOddsCorrect}`);
+
+    await evenConsumer.stop();
+    await oddConsumer.stop();
+    await partProducer.stop();
   } finally {
     await system.shutdown();
   }

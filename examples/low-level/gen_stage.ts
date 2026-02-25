@@ -6,11 +6,10 @@
 //
 // This example shows:
 // - Manual ActorSystem wiring (InMemoryTransport, LocalCluster, LocalRegistry)
-// - Producer: emits timestamps on demand (simulates a data source)
-// - ProducerConsumer: filters events (only keeps even-second timestamps)
-// - Consumer: collects and prints filtered events
-// - Multiple consumers sharing a single producer
-// - Subscription cancellation
+// - DemandDispatcher: multiple consumers, cancellation
+// - BroadcastDispatcher: all consumers get same events
+// - PartitionDispatcher: hash-based routing with even/odd split
+// - ProducerConsumer filtering pipeline
 
 import {
   ActorSystem,
@@ -37,43 +36,48 @@ async function main() {
 
   try {
     // ============================================================
-    // Part 1: Simple Producer → Consumer
+    // Part 1: DemandDispatcher — multiple consumers + cancellation
     // ============================================================
-    console.log("--- Part 1: Simple Producer → Consumer ---\n");
+    console.log("--- Part 1: DemandDispatcher (multiple consumers) ---\n");
 
-    // Producer: emits sequential numbers
-    const numberProducer = Producer.start(system, {
-      init: () => 1, // start from 1
+    const producer1 = Producer.start(system, {
+      init: () => 0,
       handleDemand: (demand, counter) => {
         const events = Array.from({ length: demand }, (_, i) => counter + i);
         return [events, counter + demand];
       },
     });
 
-    // Consumer: collects events
-    const collected: number[] = [];
-    const simpleConsumer = Consumer.start(system, {
-      handleEvents: (events, _from, state) => {
-        collected.push(...events);
-        return state;
-      },
+    const bucket1: number[] = [];
+    const bucket2: number[] = [];
+
+    const c1 = Consumer.start(system, {
+      handleEvents: (events, _from, state) => { bucket1.push(...events); return state; },
+    });
+    const c2 = Consumer.start(system, {
+      handleEvents: (events, _from, state) => { bucket2.push(...events); return state; },
     });
 
-    await simpleConsumer.subscribe(numberProducer.getRef(), {
-      maxDemand: 5,
-      minDemand: 2,
-    });
-
+    const sub1 = await c1.subscribe(producer1.getRef(), { maxDemand: 5, minDemand: 2 });
+    await c2.subscribe(producer1.getRef(), { maxDemand: 5, minDemand: 2 });
     await new Promise((r) => setTimeout(r, 100));
 
-    console.log(`  Collected ${collected.length} numbers`);
-    console.log(`  First 10: [${collected.slice(0, 10).join(", ")}]`);
+    console.log(`  Consumer 1: ${bucket1.length} events, Consumer 2: ${bucket2.length} events`);
+    const all = [...bucket1, ...bucket2].sort((a, b) => a - b);
+    console.log(`  No duplicates: ${all.length === new Set(all).size}`);
 
-    await simpleConsumer.stop();
-    await numberProducer.stop();
+    // Cancel consumer 1
+    c1.cancel(sub1);
+    const beforeCancel = bucket2.length;
+    await new Promise((r) => setTimeout(r, 50));
+    console.log(`  After cancel: Consumer 2 got ${bucket2.length - beforeCancel} more events`);
+
+    await c1.stop();
+    await c2.stop();
+    await producer1.stop();
 
     // ============================================================
-    // Part 2: 3-stage pipeline with filtering
+    // Part 2: Pipeline with ProducerConsumer filter
     // ============================================================
     console.log("\n--- Part 2: Pipeline with filter ---\n");
     console.log("  Producer (1..N) → Filter (even only) → Consumer\n");
@@ -86,7 +90,6 @@ async function main() {
       },
     });
 
-    // ProducerConsumer: pass through only even numbers
     const evenFilter = ProducerConsumer.start(system, {
       handleEvents: (events, _from, state) => {
         const evens = events.filter((n: number) => n % 2 === 0);
@@ -96,84 +99,107 @@ async function main() {
 
     const evenNumbers: number[] = [];
     const evenConsumer = Consumer.start(system, {
-      handleEvents: (events, _from, state) => {
-        evenNumbers.push(...events);
-        return state;
-      },
+      handleEvents: (events, _from, state) => { evenNumbers.push(...events); return state; },
     });
 
-    // Wire: producer → filter → consumer
     await evenFilter.subscribe(producer2.getRef(), { maxDemand: 10, minDemand: 5 });
     await evenConsumer.subscribe(evenFilter.getRef(), { maxDemand: 10, minDemand: 5 });
-
     await new Promise((r) => setTimeout(r, 150));
 
     console.log(`  Received ${evenNumbers.length} even numbers`);
     console.log(`  First 10: [${evenNumbers.slice(0, 10).join(", ")}]`);
-    const allEven = evenNumbers.every((n) => n % 2 === 0);
-    console.log(`  All even: ${allEven}`);
+    console.log(`  All even: ${evenNumbers.every((n) => n % 2 === 0)}`);
 
     await evenConsumer.stop();
     await evenFilter.stop();
     await producer2.stop();
 
     // ============================================================
-    // Part 3: Multiple consumers + cancellation
+    // Part 3: BroadcastDispatcher — fan-out
     // ============================================================
-    console.log("\n--- Part 3: Multiple consumers + cancellation ---\n");
+    console.log("\n--- Part 3: BroadcastDispatcher (fan-out) ---\n");
 
-    const producer3 = Producer.start(system, {
+    const broadcastProducer = Producer.start(system, {
       init: () => 0,
       handleDemand: (demand, counter) => {
         const events = Array.from({ length: demand }, (_, i) => counter + i);
         return [events, counter + demand];
       },
+    }, { dispatcher: { type: "broadcast" } });
+
+    const fanA: number[] = [];
+    const fanB: number[] = [];
+
+    const cA = Consumer.start(system, {
+      handleEvents: (events, _from, state) => { fanA.push(...events); return state; },
+    });
+    const cB = Consumer.start(system, {
+      handleEvents: (events, _from, state) => { fanB.push(...events); return state; },
     });
 
-    const bucket1: number[] = [];
-    const bucket2: number[] = [];
+    await Promise.all([
+      cA.subscribe(broadcastProducer.getRef(), { maxDemand: 10, minDemand: 5 }),
+      cB.subscribe(broadcastProducer.getRef(), { maxDemand: 10, minDemand: 5 }),
+    ]);
+    await new Promise((r) => setTimeout(r, 150));
 
-    const consumer1 = Consumer.start(system, {
-      handleEvents: (events, _from, state) => {
-        bucket1.push(...events);
-        return state;
+    console.log(`  Consumer A: ${fanA.length} events`);
+    console.log(`  Consumer B: ${fanB.length} events`);
+    console.log(`  Same first 5: ${fanA.slice(0, 5).join(",") === fanB.slice(0, 5).join(",")}`);
+    console.log(`  Values: [${fanA.slice(0, 5).join(", ")}]`);
+
+    await cA.stop();
+    await cB.stop();
+    await broadcastProducer.stop();
+
+    // ============================================================
+    // Part 4: PartitionDispatcher — hash-based routing
+    // ============================================================
+    console.log("\n--- Part 4: PartitionDispatcher (sharding) ---\n");
+    console.log("  Hash: event % 3 → partitions 0, 1, 2\n");
+
+    const partProducer = Producer.start(system, {
+      init: () => 0,
+      handleDemand: (demand, counter) => {
+        const events = Array.from({ length: demand }, (_, i) => counter + i);
+        return [events, counter + demand];
+      },
+    }, {
+      dispatcher: {
+        type: "partition",
+        partitions: 3,
+        hash: (e: number) => e % 3,
       },
     });
 
-    const consumer2 = Consumer.start(system, {
-      handleEvents: (events, _from, state) => {
-        bucket2.push(...events);
-        return state;
-      },
+    const p0: number[] = [];
+    const p1: number[] = [];
+    const p2: number[] = [];
+
+    const cp0 = Consumer.start(system, {
+      handleEvents: (events, _from, state) => { p0.push(...events); return state; },
+    });
+    const cp1 = Consumer.start(system, {
+      handleEvents: (events, _from, state) => { p1.push(...events); return state; },
+    });
+    const cp2 = Consumer.start(system, {
+      handleEvents: (events, _from, state) => { p2.push(...events); return state; },
     });
 
-    // Both consumers subscribe to the same producer
-    const sub1 = await consumer1.subscribe(producer3.getRef(), { maxDemand: 5, minDemand: 2 });
-    await consumer2.subscribe(producer3.getRef(), { maxDemand: 5, minDemand: 2 });
+    await cp0.subscribe(partProducer.getRef(), { maxDemand: 10, minDemand: 5, partition: 0 });
+    await cp1.subscribe(partProducer.getRef(), { maxDemand: 10, minDemand: 5, partition: 1 });
+    await cp2.subscribe(partProducer.getRef(), { maxDemand: 10, minDemand: 5, partition: 2 });
+    await new Promise((r) => setTimeout(r, 150));
 
-    await new Promise((r) => setTimeout(r, 100));
+    console.log(`  Partition 0 (n%3=0): ${p0.length} events → [${p0.slice(0, 5).join(", ")}]`);
+    console.log(`  Partition 1 (n%3=1): ${p1.length} events → [${p1.slice(0, 5).join(", ")}]`);
+    console.log(`  Partition 2 (n%3=2): ${p2.length} events → [${p2.slice(0, 5).join(", ")}]`);
+    console.log(`  All correct: P0=${p0.every((n) => n % 3 === 0)}, P1=${p1.every((n) => n % 3 === 1)}, P2=${p2.every((n) => n % 3 === 2)}`);
 
-    console.log(`  Consumer 1 received: ${bucket1.length} events`);
-    console.log(`  Consumer 2 received: ${bucket2.length} events`);
-
-    // No duplicates — DemandDispatcher splits events between consumers
-    const all = [...bucket1, ...bucket2].sort((a, b) => a - b);
-    const unique = [...new Set(all)];
-    console.log(`  Total: ${all.length}, Unique: ${unique.length}, No duplicates: ${all.length === unique.length}`);
-
-    // Cancel consumer 1's subscription
-    console.log("\n  Cancelling consumer 1's subscription...");
-    consumer1.cancel(sub1);
-    const countBefore = bucket2.length;
-
-    await new Promise((r) => setTimeout(r, 100));
-
-    console.log(`  Consumer 2 received ${bucket2.length - countBefore} more events after cancel`);
-    console.log(`  Consumer 1 stopped receiving: ${bucket1.length === bucket1.length}`);
-
-    await consumer1.stop();
-    await consumer2.stop();
-    await producer3.stop();
+    await cp0.stop();
+    await cp1.stop();
+    await cp2.stop();
+    await partProducer.stop();
   } finally {
     await system.shutdown();
     await transport.disconnect();

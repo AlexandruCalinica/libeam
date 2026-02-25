@@ -203,7 +203,7 @@ main().catch(console.error);
 | `low-level/distributed_linking.ts` | Intermediate | Remote actor linking with crash propagation |
 | `low-level/actor_migration.ts` | Intermediate | Actor migration between nodes with state preservation |
 | `low-level/distributed_ping_pong.ts` | Advanced | Real distributed actors via ZeroMQ |
-| `low-level/gen_stage.ts` | Intermediate | GenStage demand-driven pipeline with multiple consumers |
+| `low-level/gen_stage.ts` | Intermediate | GenStage pipeline with DemandDispatcher, BroadcastDispatcher, and PartitionDispatcher |
 
 ### High-Level Examples (Functional API)
 
@@ -219,4 +219,4 @@ main().catch(console.error);
 | `high-level/handle_continue.ts` | Basic | Async initialization with functional API |
 | `high-level/message_stashing.ts` | Intermediate | Message stashing with functional API |
 | `high-level/distributed.ts` | Advanced | Distributed actors via createSystem() |
-| `high-level/gen_stage.ts` | Intermediate | GenStage pipeline with back-pressure |
+| `high-level/gen_stage.ts` | Intermediate | GenStage pipeline with DemandDispatcher, BroadcastDispatcher, and PartitionDispatcher |
