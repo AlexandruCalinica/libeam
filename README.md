@@ -51,6 +51,7 @@ libeam implements the core primitives from Elixir/OTP, adapted for the Node.js r
 | **Abstractions** |
 | Agent | `Agent` | `Agent` |
 | DynamicSupervisor | `DynamicSupervisor` | `DynamicSupervisor` |
+| GenStage | `GenStage` | `Producer`, `Consumer`, `ProducerConsumer` |
 | **Distribution** |
 | Cluster membership | `:net_kernel` | `Cluster`, `GossipProtocol` |
 | Remote messaging | Transparent | Via `Transport` |
@@ -929,6 +930,89 @@ await dynSup.stop();
 - Stopping the supervisor cascades to all children (depth-first termination)
 
 See `test/dynamic_supervisor.test.ts` for more examples.
+
+### GenStage
+
+Demand-driven producer-consumer pipelines with back-pressure. Inspired by Elixir's [GenStage](https://hexdocs.pm/gen_stage). Consumers tell producers how many events they can handle; producers never emit more than requested.
+
+```typescript
+import { Producer, Consumer, ProducerConsumer } from "libeam";
+
+// Producer: emits sequential numbers on demand
+const producer = Producer.start(system, {
+  init: () => 0,
+  handleDemand: (demand, counter) => {
+    const events = Array.from({ length: demand }, (_, i) => counter + i);
+    return [events, counter + demand];
+  },
+});
+
+// Consumer: prints received events
+const consumer = Consumer.start(system, {
+  handleEvents: (events, _from, state) => {
+    console.log("Received:", events);
+    return state;
+  },
+});
+
+// Subscribe with back-pressure options
+await consumer.subscribe(producer.getRef(), { maxDemand: 100, minDemand: 50 });
+
+// 3-stage pipeline with transformation
+const multiplier = ProducerConsumer.start(system, {
+  init: () => 10,
+  handleEvents: (events, _from, factor) => {
+    return [events.map(e => e * factor), factor];
+  },
+});
+
+await multiplier.subscribe(producer.getRef(), { maxDemand: 50 });
+await consumer.subscribe(multiplier.getRef(), { maxDemand: 50 });
+```
+
+**Stage Types:**
+
+- `Producer` — Emits events in response to downstream demand. Buffers events when demand is zero.
+- `Consumer` — Subscribes to producers and processes received events.
+- `ProducerConsumer` — Receives events from upstream, transforms them, and dispatches downstream.
+
+**Producer Methods:**
+
+- `Producer.start(system, callbacks, options?, spawnOptions?): Producer` — Create a producer
+- `stop(): Promise<void>` — Stop the producer
+- `getRef(): ActorRef` — Get the producer's ref (for consumer subscriptions)
+
+**Consumer Methods:**
+
+- `Consumer.start(system, callbacks, spawnOptions?): Consumer` — Create a consumer
+- `subscribe(producerRef, options?): Promise<SubscriptionRef>` — Subscribe to a producer
+- `cancel(ref): boolean` — Cancel a subscription
+- `stop(): Promise<void>` — Stop and cancel all subscriptions
+- `getRef(): ActorRef` — Get the consumer's ref
+
+**ProducerConsumer Methods:**
+
+- `ProducerConsumer.start(system, callbacks, producerOptions?, spawnOptions?): ProducerConsumer` — Create a stage
+- `subscribe(producerRef, options?): Promise<SubscriptionRef>` — Subscribe to upstream
+- `cancelUpstream(ref): boolean` — Cancel an upstream subscription
+- `stop(): Promise<void>` — Stop and cancel all subscriptions
+- `getRef(): ActorRef` — Get the stage's ref
+
+**Subscription Options:**
+
+- `maxDemand` — Max events in flight per subscription (default: 1000)
+- `minDemand` — Threshold to request more events (default: 75% of maxDemand)
+- `cancel` — Cancel behavior: `"permanent"` | `"transient"` | `"temporary"` (default)
+
+**Back-pressure behavior:**
+
+- Consumer sends initial demand of `maxDemand` on subscribe
+- When pending demand drops to `minDemand`, consumer automatically re-asks
+- Producer never emits more events than total demand from all consumers
+- Excess events are buffered in the producer (configurable `bufferSize`, default: 10000)
+- Multiple consumers receive events via DemandDispatcher (highest-demand-first)
+
+See `test/gen_stage.test.ts` for more examples.
 
 ### ActorSystem
 
