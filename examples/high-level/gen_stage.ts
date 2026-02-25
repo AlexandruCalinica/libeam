@@ -1,11 +1,13 @@
 // examples/high-level/gen_stage.ts
 //
-// Demonstrates: Demand-driven producer-consumer pipelines with back-pressure
+// Demonstrates: Demand-driven producer-consumer pipelines with back-pressure and worker spawning
 // Run: npx tsx examples/high-level/gen_stage.ts
 //
 // This example shows:
 // - DemandDispatcher: default highest-demand-first routing
 // - BroadcastDispatcher: all consumers get all events
+// - PartitionDispatcher: hash-based routing to specific consumers
+// - ConsumerSupervisor: spawn a supervised worker per event
 // - PartitionDispatcher: hash-based routing to specific consumers
 // - 3-stage pipeline: Producer → Multiplier → Consumer
 // - Back-pressure: consumers control event flow via demand
@@ -14,7 +16,7 @@
 // how many events they can handle, and producers never emit more than
 // requested. This prevents fast producers from overwhelming slow consumers.
 
-import { createSystem, Producer, Consumer, ProducerConsumer } from "../../src";
+import { createSystem, createActor, Producer, Consumer, ProducerConsumer, ConsumerSupervisor } from "../../src";
 
 // --- Main ---
 
@@ -155,6 +157,49 @@ async function main() {
     await evenConsumer.stop();
     await oddConsumer.stop();
     await partProducer.stop();
+
+    // ============================================================
+    // Part 4: ConsumerSupervisor — one worker per event
+    // ============================================================
+    console.log("\n--- Part 4: ConsumerSupervisor (worker pool) ---\n");
+    console.log("  Producer → ConsumerSupervisor → [Worker per event]\n");
+
+    const processed: number[] = [];
+
+    // Define a worker actor that processes one event and exits
+    const JobWorker = createActor((_ctx, self, results: number[], job: number) => {
+      results.push(job);
+      // Worker completes after processing — exits immediately
+      setTimeout(() => _ctx.exit("normal"), 1);
+      return self;
+    });
+
+    const jobProducer = Producer.start(system.system, {
+      init: () => 0,
+      handleDemand: (demand, counter) => {
+        const events = Array.from({ length: demand }, (_, i) => counter + i);
+        return [events, counter + demand];
+      },
+    });
+
+    const supervisor = ConsumerSupervisor.start(system.system, {
+      actorClass: JobWorker,
+      args: [processed],  // event (job number) appended as last arg
+    });
+
+    await supervisor.subscribe(jobProducer.getRef(), { maxDemand: 5, minDemand: 3 });
+    await new Promise((r) => setTimeout(r, 300));
+
+    // Workers spawn, process, exit, release demand → more events flow
+    console.log(`  Total jobs processed: ${processed.length}`);
+    console.log(`  First 10: [${processed.sort((a, b) => a - b).slice(0, 10).join(", ")}]`);
+    console.log(`  All sequential: ${processed.sort((a, b) => a - b).slice(0, 10).every((v, i) => v === i)}`);
+
+    const counts = await supervisor.countChildren();
+    console.log(`  Active workers now: ${counts.active} (all completed)`);
+
+    await supervisor.stop();
+    await jobProducer.stop();
   } finally {
     await system.shutdown();
   }

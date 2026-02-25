@@ -51,7 +51,7 @@ libeam implements the core primitives from Elixir/OTP, adapted for the Node.js r
 | **Abstractions** |
 | Agent | `Agent` | `Agent` |
 | DynamicSupervisor | `DynamicSupervisor` | `DynamicSupervisor` |
-| GenStage | `GenStage` | `Producer`, `Consumer`, `ProducerConsumer` |
+| GenStage | `GenStage` | `Producer`, `Consumer`, `ProducerConsumer`, `ConsumerSupervisor` |
 | **Distribution** |
 | Cluster membership | `:net_kernel` | `Cluster`, `GossipProtocol` |
 | Remote messaging | Transparent | Via `Transport` |
@@ -936,7 +936,7 @@ See `test/dynamic_supervisor.test.ts` for more examples.
 Demand-driven producer-consumer pipelines with back-pressure. Inspired by Elixir's [GenStage](https://hexdocs.pm/gen_stage). Consumers tell producers how many events they can handle; producers never emit more than requested.
 
 ```typescript
-import { Producer, Consumer, ProducerConsumer } from "libeam";
+import { Producer, Consumer, ProducerConsumer, ConsumerSupervisor } from "libeam";
 
 // Producer: emits sequential numbers on demand
 const producer = Producer.start(system, {
@@ -975,6 +975,7 @@ await consumer.subscribe(multiplier.getRef(), { maxDemand: 50 });
 - `Producer` — Emits events in response to downstream demand. Buffers events when demand is zero.
 - `Consumer` — Subscribes to producers and processes received events.
 - `ProducerConsumer` — Receives events from upstream, transforms them, and dispatches downstream.
+- `ConsumerSupervisor` — Subscribes to a producer and spawns a supervised worker per event. Back-pressure is tied to worker lifecycle.
 
 **Producer Methods:**
 
@@ -997,6 +998,16 @@ await consumer.subscribe(multiplier.getRef(), { maxDemand: 50 });
 - `cancelUpstream(ref): boolean` — Cancel an upstream subscription
 - `stop(): Promise<void>` — Stop and cancel all subscriptions
 - `getRef(): ActorRef` — Get the stage's ref
+
+**ConsumerSupervisor Methods:**
+
+- `ConsumerSupervisor.start(system, childSpec, options?, spawnOptions?): ConsumerSupervisor` — Create a consumer supervisor
+- `subscribe(producerRef, options?): Promise<SubscriptionRef>` — Subscribe to a producer
+- `cancel(ref): boolean` — Cancel a subscription
+- `whichChildren(): Promise<ChildInfo[]>` — List active worker children
+- `countChildren(): Promise<ChildCounts>` — Get worker count statistics
+- `stop(): Promise<void>` — Stop and cancel all subscriptions, terminate all workers
+- `getRef(): ActorRef` — Get the supervisor's ref
 
 **Subscription Options:**
 
@@ -1061,6 +1072,49 @@ await consumer1.subscribe(producer.getRef(), { maxDemand: 10, partition: 1 });
 - Multiple consumers receive events via the configured dispatcher
 
 See `test/gen_stage.test.ts` for more examples.
+
+**ConsumerSupervisor behavior:**
+
+ConsumerSupervisor spawns one supervised worker per event. Demand is tied to worker lifecycle:
+
+- On subscribe, sends initial demand of `maxDemand` to producer
+- Each received event spawns a worker: `actorClass.init(...baseArgs, event)`
+- `maxDemand` = max concurrent workers (never more active at once)
+- When a worker exits (normal or crash), its demand slot is released
+- Released slots accumulate; when they reach `minDemand`, more events are requested
+- Workers are supervised with one-for-one strategy (configurable `maxRestarts`/`periodMs`)
+
+```typescript
+import { Producer, ConsumerSupervisor } from "libeam";
+
+// Producer emits jobs
+const producer = Producer.start(system, {
+  init: () => 0,
+  handleDemand: (demand, counter) => {
+    const jobs = Array.from({ length: demand }, (_, i) => ({
+      id: counter + i,
+      payload: `task-${counter + i}`,
+    }));
+    return [jobs, counter + demand];
+  },
+});
+
+// ConsumerSupervisor spawns a JobWorker per event
+const supervisor = ConsumerSupervisor.start(system, {
+  actorClass: JobWorker,
+  args: ["base-config"],  // event appended as last arg
+});
+
+// max 10 concurrent workers, re-ask when 7 complete
+await supervisor.subscribe(producer.getRef(), {
+  maxDemand: 10,
+  minDemand: 7,
+});
+
+// Inspect active workers
+const workers = await supervisor.whichChildren();
+const counts = await supervisor.countChildren();
+```
 
 ### ActorSystem
 

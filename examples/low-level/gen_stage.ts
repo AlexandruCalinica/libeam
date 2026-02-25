@@ -1,6 +1,6 @@
 // examples/low-level/gen_stage.ts
 //
-// Demonstrates: GenStage demand-driven pipeline with class-based API
+// Demonstrates: GenStage demand-driven pipeline with class-based API and ConsumerSupervisor
 // Prerequisites: None
 // Run: npx tsx examples/low-level/gen_stage.ts
 //
@@ -10,8 +10,11 @@
 // - BroadcastDispatcher: all consumers get same events
 // - PartitionDispatcher: hash-based routing with even/odd split
 // - ProducerConsumer filtering pipeline
+// - ConsumerSupervisor: spawn supervised class-based workers per event
+// - ProducerConsumer filtering pipeline
 
 import {
+  Actor,
   ActorSystem,
   InMemoryTransport,
   LocalCluster,
@@ -19,7 +22,20 @@ import {
   Producer,
   Consumer,
   ProducerConsumer,
+  ConsumerSupervisor,
 } from "../../src";
+
+// --- Worker Actor (class-based) ---
+
+class TaskWorker extends Actor {
+  init(results: number[], taskId: number) {
+    results.push(taskId);
+    // Worker processes the task and stops itself
+    setTimeout(() => void this.context.system.stop(this.self), 1);
+  }
+  handleCall() { return undefined; }
+  handleCast() {}
+}
 
 // --- Main ---
 
@@ -200,6 +216,42 @@ async function main() {
     await cp1.stop();
     await cp2.stop();
     await partProducer.stop();
+
+    // ============================================================
+    // Part 5: ConsumerSupervisor — class-based workers
+    // ============================================================
+    console.log("\n--- Part 5: ConsumerSupervisor (class-based workers) ---\n");
+    console.log("  Producer → ConsumerSupervisor → [TaskWorker per event]\n");
+
+
+    const taskResults: number[] = [];
+
+    const taskProducer = Producer.start(system, {
+      init: () => 0,
+      handleDemand: (demand, counter) => {
+        const events = Array.from({ length: demand }, (_, i) => counter + i);
+        return [events, counter + demand];
+      },
+    });
+
+    const taskSupervisor = ConsumerSupervisor.start(system, {
+      actorClass: TaskWorker,
+      args: [taskResults],  // taskId (event) appended as last arg
+    });
+
+    await taskSupervisor.subscribe(taskProducer.getRef(), { maxDemand: 8, minDemand: 5 });
+    await new Promise((r) => setTimeout(r, 300));
+
+    const sorted = taskResults.sort((a, b) => a - b);
+    console.log(`  Tasks completed: ${taskResults.length}`);
+    console.log(`  First 10: [${sorted.slice(0, 10).join(", ")}]`);
+    console.log(`  All sequential: ${sorted.slice(0, 10).every((v, i) => v === i)}`);
+
+    const taskCounts = await taskSupervisor.countChildren();
+    console.log(`  Active workers: ${taskCounts.active}`);
+
+    await taskSupervisor.stop();
+    await taskProducer.stop();
   } finally {
     await system.shutdown();
     await transport.disconnect();
