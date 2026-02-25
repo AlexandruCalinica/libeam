@@ -27,7 +27,18 @@ export interface ProducerOptions {
   bufferSize?: number;
   /** Keep "first" or "last" events when buffer overflows. Default: "last" */
   bufferKeep?: "first" | "last";
+  /** Dispatcher strategy. Default: { type: "demand" } */
+  dispatcher?: DispatcherConfig;
 }
+
+/** Hash function for PartitionDispatcher. Return partition index or null to discard. */
+export type PartitionHashFunction = (event: any) => number | null;
+
+/** Dispatcher configuration for producers. */
+export type DispatcherConfig =
+  | { type: "demand" }
+  | { type: "broadcast" }
+  | { type: "partition"; partitions: number; hash?: PartitionHashFunction };
 
 /**
  * Options for subscribing a consumer to a producer.
@@ -43,6 +54,8 @@ export interface SubscriptionOptions {
    *  - "temporary": consumer always ignores cancels (default)
    */
   cancel?: "permanent" | "transient" | "temporary";
+  /** Partition to subscribe to (required for PartitionDispatcher). */
+  partition?: number | string;
 }
 
 // ============ Subscription Info ============
@@ -116,12 +129,42 @@ export interface ProducerConsumerCallbacks<TState> {
 // ============ Internal Protocol ============
 
 type StageCall =
-  | { __stage: "subscribe"; tag: string; consumerRef: ActorRef; maxDemand: number; minDemand: number };
+  | {
+    __stage: "subscribe";
+    tag: string;
+    consumerRef: ActorRef;
+    maxDemand: number;
+    minDemand: number;
+    partition?: number | string;
+  };
 
 type StageCast =
   | { __stage: "ask"; tag: string; demand: number }
   | { __stage: "events"; tag: string; producerRef: ActorRef; events: any[] }
   | { __stage: "cancel"; tag: string; reason: string };
+
+// ============ Dispatcher Interface ============
+
+/** Result of dispatching events to subscribers. */
+interface DispatchResult {
+  dispatched: Array<{ consumerRef: ActorRef; tag: string; events: any[] }>;
+  remaining: any[];
+}
+
+/** Options passed to dispatcher on subscriber registration. */
+interface DispatcherSubscribeOpts {
+  partition?: number | string;
+}
+
+/** Interface all dispatchers implement. @internal */
+interface Dispatcher {
+  subscribe(tag: string, sub: ProducerSub, opts?: DispatcherSubscribeOpts): void;
+  cancel(tag: string): void;
+  ask(tag: string, demand: number): number;
+  dispatch(events: any[]): DispatchResult;
+  hasSubscribers(): boolean;
+  has(tag: string): boolean;
+}
 
 // ============ DemandDispatcher ============
 
@@ -129,27 +172,24 @@ type StageCast =
  * Default dispatcher: sends events to the consumer with the highest pending demand.
  * @internal
  */
-class DemandDispatcher {
+class DemandDispatcher implements Dispatcher {
   private subscribers = new Map<string, ProducerSub>();
 
-  addSubscriber(tag: string, sub: ProducerSub): void {
+  subscribe(tag: string, sub: ProducerSub): void {
     this.subscribers.set(tag, sub);
   }
 
-  removeSubscriber(tag: string): void {
+  cancel(tag: string): void {
     this.subscribers.delete(tag);
   }
 
-  getSubscriber(tag: string): ProducerSub | undefined {
-    return this.subscribers.get(tag);
-  }
-
-  addDemand(tag: string, demand: number): void {
+  ask(tag: string, demand: number): number {
     const sub = this.subscribers.get(tag);
     if (sub) sub.demand += demand;
+    return this.totalDemand();
   }
 
-  totalDemand(): number {
+  private totalDemand(): number {
     let total = 0;
     for (const sub of this.subscribers.values()) {
       total += sub.demand;
@@ -161,7 +201,7 @@ class DemandDispatcher {
    * Dispatch events to subscribers based on demand.
    * Returns events that could not be dispatched (no demand).
    */
-  dispatch(events: any[]): { dispatched: Array<{ consumerRef: ActorRef; tag: string; events: any[] }>; remaining: any[] } {
+  dispatch(events: any[]): DispatchResult {
     const dispatched: Array<{ consumerRef: ActorRef; tag: string; events: any[] }> = [];
     let remaining = [...events];
 
@@ -185,9 +225,212 @@ class DemandDispatcher {
     return this.subscribers.size > 0;
   }
 
-  getAllTags(): string[] {
-    return [...this.subscribers.keys()];
+  has(tag: string): boolean {
+    return this.subscribers.has(tag);
   }
+}
+
+class BroadcastDispatcher implements Dispatcher {
+  private subscribers = new Map<string, ProducerSub>();
+  private waiting = 0;
+  private requested = 0;
+
+  subscribe(tag: string, sub: ProducerSub): void {
+    this.subscribers.set(tag, sub);
+    this.waiting = 0;
+  }
+
+  cancel(tag: string): void {
+    this.subscribers.delete(tag);
+    if (this.subscribers.size === 0) {
+      this.waiting = 0;
+      this.requested = 0;
+      return;
+    }
+    this.syncDemands();
+  }
+
+  ask(tag: string, demand: number): number {
+    const sub = this.subscribers.get(tag);
+    if (!sub) return 0;
+    sub.demand += demand;
+    return this.syncDemands();
+  }
+
+  dispatch(events: any[]): DispatchResult {
+    if (this.waiting === 0 || this.subscribers.size === 0) {
+      return { dispatched: [], remaining: events };
+    }
+
+    const count = Math.min(events.length, this.waiting);
+    const deliverNow = events.slice(0, count);
+    const deliverLater = events.slice(count);
+    this.waiting -= count;
+    this.requested -= count;
+
+    const dispatched: DispatchResult["dispatched"] = [];
+    for (const [tag, sub] of this.subscribers) {
+      dispatched.push({ consumerRef: sub.consumerRef, tag, events: deliverNow });
+    }
+
+    return { dispatched, remaining: deliverLater };
+  }
+
+  hasSubscribers(): boolean {
+    return this.subscribers.size > 0;
+  }
+
+  has(tag: string): boolean {
+    return this.subscribers.has(tag);
+  }
+
+  private syncDemands(): number {
+    if (this.subscribers.size === 0) return 0;
+    let min = Infinity;
+    for (const sub of this.subscribers.values()) {
+      min = Math.min(min, sub.demand);
+    }
+    if (min <= 0) return 0;
+    for (const sub of this.subscribers.values()) {
+      sub.demand -= min;
+    }
+    this.waiting += min;
+    const request = Math.max(0, this.waiting - this.requested);
+    this.requested += request;
+    return request;
+  }
+}
+
+class PartitionDispatcher implements Dispatcher {
+  private partitionCount: number;
+  private hash: PartitionHashFunction;
+  private partitions: Map<number, { tag: string; sub: ProducerSub } | null>;
+  private tagToPartition = new Map<string, number>();
+  private partitionBuffers = new Map<number, any[]>();
+
+  constructor(partitions: number, hash?: PartitionHashFunction) {
+    this.partitionCount = partitions;
+    this.hash = hash ?? ((event: any) => {
+      if (typeof event === "number") return event % partitions;
+      if (typeof event === "string") return Math.abs(simpleHash(event)) % partitions;
+      if (typeof event === "object" && event !== null && "key" in event) {
+        const key = (event as { key: unknown }).key;
+        if (typeof key === "number") return key % partitions;
+        if (typeof key === "string") return Math.abs(simpleHash(key)) % partitions;
+      }
+      return 0;
+    });
+    this.partitions = new Map();
+    for (let i = 0; i < partitions; i++) {
+      this.partitions.set(i, null);
+      this.partitionBuffers.set(i, []);
+    }
+  }
+
+  subscribe(tag: string, sub: ProducerSub, opts?: DispatcherSubscribeOpts): void {
+    const partition = opts?.partition;
+    if (partition === undefined || partition === null) {
+      throw new Error("PartitionDispatcher requires a 'partition' option on subscribe");
+    }
+    const p = typeof partition === "string" ? parseInt(partition, 10) : partition;
+    if (p < 0 || p >= this.partitionCount || !Number.isInteger(p)) {
+      throw new Error(`Invalid partition ${partition}. Must be 0..${this.partitionCount - 1}`);
+    }
+    const existing = this.partitions.get(p);
+    if (existing !== null && existing !== undefined) {
+      throw new Error(`Partition ${p} is already taken by subscriber ${existing.tag}`);
+    }
+    this.partitions.set(p, { tag, sub });
+    this.tagToPartition.set(tag, p);
+  }
+
+  cancel(tag: string): void {
+    const p = this.tagToPartition.get(tag);
+    if (p === undefined) return;
+    this.partitions.set(p, null);
+    this.tagToPartition.delete(tag);
+  }
+
+  ask(tag: string, demand: number): number {
+    const p = this.tagToPartition.get(tag);
+    if (p === undefined) return 0;
+    const entry = this.partitions.get(p);
+    if (!entry) return 0;
+    entry.sub.demand += demand;
+    return demand;
+  }
+
+  dispatch(events: any[]): DispatchResult {
+    const dispatched = new Map<string, { consumerRef: ActorRef; tag: string; events: any[] }>();
+    const remaining: any[] = [];
+
+    for (const event of events) {
+      const p = this.hash(event);
+      if (p === null) continue;
+
+      if (p < 0 || p >= this.partitionCount) {
+        throw new Error(`Hash returned invalid partition ${p}. Must be 0..${this.partitionCount - 1} or null`);
+      }
+
+      const entry = this.partitions.get(p);
+      if (!entry || entry.sub.demand <= 0) {
+        const buf = this.partitionBuffers.get(p) ?? [];
+        buf.push(event);
+        this.partitionBuffers.set(p, buf);
+        continue;
+      }
+
+      entry.sub.demand--;
+      const key = entry.tag;
+      if (!dispatched.has(key)) {
+        dispatched.set(key, { consumerRef: entry.sub.consumerRef, tag: key, events: [] });
+      }
+      dispatched.get(key)!.events.push(event);
+    }
+
+    for (const [p, buf] of this.partitionBuffers) {
+      if (buf.length === 0) continue;
+      const entry = this.partitions.get(p);
+      if (!entry || entry.sub.demand <= 0) continue;
+      const count = Math.min(entry.sub.demand, buf.length);
+      const drained = buf.splice(0, count);
+      entry.sub.demand -= count;
+      const key = entry.tag;
+      if (!dispatched.has(key)) {
+        dispatched.set(key, { consumerRef: entry.sub.consumerRef, tag: key, events: [] });
+      }
+      dispatched.get(key)!.events.push(...drained);
+    }
+
+    return { dispatched: [...dispatched.values()], remaining };
+  }
+
+  hasSubscribers(): boolean {
+    for (const entry of this.partitions.values()) {
+      if (entry !== null) return true;
+    }
+    return false;
+  }
+
+  has(tag: string): boolean {
+    return this.tagToPartition.has(tag);
+  }
+}
+
+/** Simple string hash (djb2). @internal */
+function simpleHash(str: string): number {
+  let hash = 5381;
+  for (let i = 0; i < str.length; i++) {
+    hash = ((hash << 5) + hash + str.charCodeAt(i)) | 0;
+  }
+  return hash;
+}
+
+function createDispatcher(config?: DispatcherConfig): Dispatcher {
+  if (!config || config.type === "demand") return new DemandDispatcher();
+  if (config.type === "broadcast") return new BroadcastDispatcher();
+  if (config.type === "partition") return new PartitionDispatcher(config.partitions, config.hash);
+  return new DemandDispatcher();
 }
 
 // ============ ProducerStageActor ============
@@ -200,7 +443,7 @@ class DemandDispatcher {
 class ProducerStageActor extends Actor {
   private userState: any;
   private callbacks!: ProducerCallbacks<any>;
-  private dispatcher = new DemandDispatcher();
+  private dispatcher!: Dispatcher;
   private buffer: any[] = [];
   private bufferSize = 10000;
   private bufferKeep: "first" | "last" = "last";
@@ -208,6 +451,7 @@ class ProducerStageActor extends Actor {
 
   init(callbacks: ProducerCallbacks<any>, options?: ProducerOptions, ...args: any[]) {
     this.callbacks = callbacks;
+    this.dispatcher = createDispatcher(options?.dispatcher);
     if (options?.bufferSize !== undefined) this.bufferSize = options.bufferSize;
     if (options?.bufferKeep !== undefined) this.bufferKeep = options.bufferKeep;
     this.log = createLogger("GenStage.Producer", this.context.system.id);
@@ -235,19 +479,19 @@ class ProducerStageActor extends Actor {
   }
 
   private handleSubscribe(msg: StageCall & { __stage: "subscribe" }): boolean {
-    this.dispatcher.addSubscriber(msg.tag, {
+    this.dispatcher.subscribe(msg.tag, {
       consumerRef: msg.consumerRef,
       demand: 0,
       maxDemand: msg.maxDemand,
       minDemand: msg.minDemand,
-    });
+    }, { partition: msg.partition });
     this.log.debug("Consumer subscribed", { tag: msg.tag });
     return true;
   }
 
   private handleAsk(tag: string, demand: number): void {
     if (demand <= 0) return;
-    this.dispatcher.addDemand(tag, demand);
+    const upstreamDemand = this.dispatcher.ask(tag, demand);
 
     // First, try to drain buffered events
     if (this.buffer.length > 0) {
@@ -256,10 +500,9 @@ class ProducerStageActor extends Actor {
       this.sendDispatched(dispatched);
     }
 
-    // If there's still demand, ask user for more events
-    const totalDemand = this.dispatcher.totalDemand();
-    if (totalDemand > 0) {
-      const [events, newState] = this.callbacks.handleDemand(totalDemand, this.userState);
+    // If dispatcher requests upstream events, ask user
+    if (upstreamDemand > 0) {
+      const [events, newState] = this.callbacks.handleDemand(upstreamDemand, this.userState);
       this.userState = newState;
       if (events.length > 0) {
         this.dispatchOrBuffer(events);
@@ -268,7 +511,7 @@ class ProducerStageActor extends Actor {
   }
 
   private handleCancel(tag: string, reason: string): void {
-    this.dispatcher.removeSubscriber(tag);
+    this.dispatcher.cancel(tag);
     this.log.debug("Consumer cancelled", { tag, reason });
   }
 
@@ -461,7 +704,7 @@ class ProducerConsumerStageActor extends Actor {
   private upstreamSubs = new Map<string, ConsumerSub>();
 
   // Producer side (downstream)
-  private dispatcher = new DemandDispatcher();
+  private dispatcher!: Dispatcher;
   private buffer: any[] = [];
   private bufferSize = 10000;
   private bufferKeep: "first" | "last" = "last";
@@ -474,6 +717,7 @@ class ProducerConsumerStageActor extends Actor {
     ...args: any[]
   ) {
     this.callbacks = callbacks;
+    this.dispatcher = createDispatcher(producerOptions?.dispatcher);
     if (producerOptions?.bufferSize !== undefined) this.bufferSize = producerOptions.bufferSize;
     if (producerOptions?.bufferKeep !== undefined) this.bufferKeep = producerOptions.bufferKeep;
     this.log = createLogger("GenStage.ProducerConsumer", this.context.system.id);
@@ -484,12 +728,12 @@ class ProducerConsumerStageActor extends Actor {
     if (message?.__stage === "subscribe") {
       // Downstream consumer subscribing
       const msg = message as StageCall & { __stage: "subscribe" };
-      this.dispatcher.addSubscriber(msg.tag, {
+      this.dispatcher.subscribe(msg.tag, {
         consumerRef: msg.consumerRef,
         demand: 0,
         maxDemand: msg.maxDemand,
         minDemand: msg.minDemand,
-      });
+      }, { partition: msg.partition });
       this.log.debug("Downstream consumer subscribed", { tag: msg.tag });
       return true;
     }
@@ -592,7 +836,7 @@ class ProducerConsumerStageActor extends Actor {
 
   private handleDownstreamAsk(tag: string, demand: number): void {
     if (demand <= 0) return;
-    this.dispatcher.addDemand(tag, demand);
+    this.dispatcher.ask(tag, demand);
 
     // Drain buffer first
     if (this.buffer.length > 0) {
@@ -604,8 +848,8 @@ class ProducerConsumerStageActor extends Actor {
 
   private handleCancel(tag: string, reason: string): void {
     // Could be upstream or downstream cancel
-    if (this.dispatcher.getSubscriber(tag)) {
-      this.dispatcher.removeSubscriber(tag);
+    if (this.dispatcher.has(tag)) {
+      this.dispatcher.cancel(tag);
       this.log.debug("Downstream consumer cancelled", { tag, reason });
     } else if (this.upstreamSubs.has(tag)) {
       this.upstreamSubs.delete(tag);
@@ -777,6 +1021,7 @@ export class Consumer {
       consumerRef: this.actorRef,
       maxDemand,
       minDemand,
+      partition: options.partition,
     } satisfies StageCall);
 
     // Send initial demand
@@ -873,6 +1118,7 @@ export class ProducerConsumer {
       consumerRef: this.actorRef,
       maxDemand,
       minDemand,
+      partition: options.partition,
     } satisfies StageCall);
 
     this.actor.sendInitialDemand(tag);

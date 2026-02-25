@@ -204,6 +204,220 @@ describe("GenStage", () => {
     });
   });
 
+  describe("BroadcastDispatcher", () => {
+    it("sends all events to all consumers", async () => {
+      const received1: number[] = [];
+      const received2: number[] = [];
+
+      const producer = Producer.start(system, {
+        init: () => 0,
+        handleDemand: (demand, counter) => {
+          const events = Array.from({ length: demand }, (_, i) => counter + i);
+          return [events, counter + demand];
+        },
+      }, { dispatcher: { type: "broadcast" } });
+
+      const consumer1 = Consumer.start(system, {
+        handleEvents: (events, _from, state) => { received1.push(...events); return state; },
+      });
+      const consumer2 = Consumer.start(system, {
+        handleEvents: (events, _from, state) => { received2.push(...events); return state; },
+      });
+
+      await Promise.all([
+        consumer1.subscribe(producer.getRef(), { maxDemand: 10, minDemand: 5 }),
+        consumer2.subscribe(producer.getRef(), { maxDemand: 10, minDemand: 5 }),
+      ]);
+      await sleep(100);
+
+      expect(received1.length).toBeGreaterThan(0);
+      expect(received2.length).toBeGreaterThan(0);
+      expect(received1.slice(0, 10)).toEqual(received2.slice(0, 10));
+
+      await consumer1.stop();
+      await consumer2.stop();
+      await producer.stop();
+    });
+
+    it("demand equals min of all consumers (slow consumer throttles)", async () => {
+      const received1: number[] = [];
+      const received2: number[] = [];
+
+      const producer = Producer.start(system, {
+        init: () => 0,
+        handleDemand: (demand, counter) => {
+          const events = Array.from({ length: demand }, (_, i) => counter + i);
+          return [events, counter + demand];
+        },
+      }, { dispatcher: { type: "broadcast" } });
+
+      const consumer1 = Consumer.start(system, {
+        handleEvents: (events, _from, state) => { received1.push(...events); return state; },
+      });
+      const consumer2 = Consumer.start(system, {
+        handleEvents: (events, _from, state) => { received2.push(...events); return state; },
+      });
+
+      await Promise.all([
+        consumer1.subscribe(producer.getRef(), { maxDemand: 10, minDemand: 5 }),
+        consumer2.subscribe(producer.getRef(), { maxDemand: 3, minDemand: 1 }),
+      ]);
+      await sleep(100);
+
+      expect(received1.slice(0, received2.length)).toEqual(received2.slice(0, received2.length));
+
+      await consumer1.stop();
+      await consumer2.stop();
+      await producer.stop();
+    });
+
+    it("single consumer works like demand dispatcher", async () => {
+      const received: number[] = [];
+
+      const producer = Producer.start(system, {
+        init: () => 0,
+        handleDemand: (demand, counter) => {
+          const events = Array.from({ length: demand }, (_, i) => counter + i);
+          return [events, counter + demand];
+        },
+      }, { dispatcher: { type: "broadcast" } });
+
+      const consumer = Consumer.start(system, {
+        handleEvents: (events, _from, state) => { received.push(...events); return state; },
+      });
+
+      await consumer.subscribe(producer.getRef(), { maxDemand: 10, minDemand: 5 });
+      await sleep(50);
+
+      expect(received.length).toBeGreaterThanOrEqual(10);
+      expect(received.slice(0, 10)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+
+      await consumer.stop();
+      await producer.stop();
+    });
+  });
+
+  describe("PartitionDispatcher", () => {
+    it("routes events to correct partition by hash", async () => {
+      const partition0: number[] = [];
+      const partition1: number[] = [];
+
+      const producer = Producer.start(system, {
+        init: () => 0,
+        handleDemand: (demand, counter) => {
+          const events = Array.from({ length: demand }, (_, i) => counter + i);
+          return [events, counter + demand];
+        },
+      }, { dispatcher: { type: "partition", partitions: 2, hash: (e: number) => e % 2 } });
+
+      const c0 = Consumer.start(system, {
+        handleEvents: (events, _from, state) => { partition0.push(...events); return state; },
+      });
+      const c1 = Consumer.start(system, {
+        handleEvents: (events, _from, state) => { partition1.push(...events); return state; },
+      });
+
+      await c0.subscribe(producer.getRef(), { maxDemand: 10, minDemand: 5, partition: 0 });
+      await c1.subscribe(producer.getRef(), { maxDemand: 10, minDemand: 5, partition: 1 });
+      await sleep(100);
+
+      expect(partition0.length).toBeGreaterThan(0);
+      expect(partition1.length).toBeGreaterThan(0);
+      for (const e of partition0) expect(e % 2).toBe(0);
+      for (const e of partition1) expect(e % 2).toBe(1);
+
+      await c0.stop();
+      await c1.stop();
+      await producer.stop();
+    });
+
+    it("rejects duplicate partition subscription", async () => {
+      const producer = Producer.start(system, {
+        init: () => 0,
+        handleDemand: (_demand, state) => [[], state],
+      }, { dispatcher: { type: "partition", partitions: 2, hash: (e: number) => e % 2 } });
+
+      const c0 = Consumer.start(system, {
+        handleEvents: (_events, _from, state) => state,
+      });
+      const c1 = Consumer.start(system, {
+        handleEvents: (_events, _from, state) => state,
+      });
+
+      await c0.subscribe(producer.getRef(), { maxDemand: 5, partition: 0 });
+      await expect(c1.subscribe(producer.getRef(), { maxDemand: 5, partition: 0 })).rejects.toThrow();
+
+      await c0.stop();
+      await c1.stop();
+      await producer.stop();
+    });
+
+    it("hash returning null discards event", async () => {
+      const received: number[] = [];
+
+      const producer = Producer.start(system, {
+        init: () => 0,
+        handleDemand: (demand, counter) => {
+          const events = Array.from({ length: demand }, (_, i) => counter + i);
+          return [events, counter + demand];
+        },
+      }, {
+        dispatcher: {
+          type: "partition",
+          partitions: 1,
+          hash: (e: number) => e % 2 === 0 ? 0 : null,
+        },
+      });
+
+      const c0 = Consumer.start(system, {
+        handleEvents: (events, _from, state) => { received.push(...events); return state; },
+      });
+
+      await c0.subscribe(producer.getRef(), { maxDemand: 10, minDemand: 5, partition: 0 });
+      await sleep(100);
+
+      expect(received.length).toBeGreaterThan(0);
+      for (const e of received) expect(e % 2).toBe(0);
+
+      await c0.stop();
+      await producer.stop();
+    });
+
+    it("works in a 3-stage pipeline", async () => {
+      const producer = Producer.start(system, {
+        init: () => 0,
+        handleDemand: (demand, counter) => {
+          const events = Array.from({ length: demand }, (_, i) => counter + i);
+          return [events, counter + demand];
+        },
+      }, { dispatcher: { type: "partition", partitions: 2, hash: (e: number) => e % 2 } });
+
+      const evenNums: number[] = [];
+      const oddNums: number[] = [];
+
+      const cEven = Consumer.start(system, {
+        handleEvents: (events, _from, state) => { evenNums.push(...events); return state; },
+      });
+      const cOdd = Consumer.start(system, {
+        handleEvents: (events, _from, state) => { oddNums.push(...events); return state; },
+      });
+
+      await cEven.subscribe(producer.getRef(), { maxDemand: 10, minDemand: 5, partition: 0 });
+      await cOdd.subscribe(producer.getRef(), { maxDemand: 10, minDemand: 5, partition: 1 });
+      await sleep(100);
+
+      const all = [...evenNums, ...oddNums].sort((a, b) => a - b);
+      const unique = [...new Set(all)];
+      expect(all.length).toEqual(unique.length);
+      expect(evenNums.length).toBeGreaterThan(0);
+      expect(oddNums.length).toBeGreaterThan(0);
+
+      await cEven.stop();
+      await cOdd.stop();
+      await producer.stop();
+    });
+  });
+
   describe("subscription cancel", () => {
     it("consumer cancels subscription", async () => {
       const received: number[] = [];
