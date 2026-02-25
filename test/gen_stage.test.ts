@@ -1,8 +1,18 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import {
-  ActorSystem, InMemoryTransport, LocalRegistry, Cluster,
+  Actor,
+  ActorSystem,
+  InMemoryTransport,
+  LocalRegistry,
+  Cluster,
 } from "../src";
-import { Producer, Consumer, ProducerConsumer } from "../src/gen_stage";
+import {
+  Producer,
+  Consumer,
+  ConsumerSupervisor,
+  ProducerConsumer,
+  ProducerOptions,
+} from "../src/gen_stage";
 
 class MockCluster implements Cluster {
   constructor(public readonly nodeId: string) {}
@@ -13,6 +23,94 @@ class MockCluster implements Cluster {
 
 const sleep = (ms: number): Promise<void> =>
   new Promise((r) => setTimeout(r, ms));
+
+const waitFor = async (
+  predicate: () => boolean,
+  timeoutMs = 2000,
+  intervalMs = 10,
+): Promise<void> => {
+  const start = Date.now();
+  while (!predicate()) {
+    if (Date.now() - start > timeoutMs) {
+      throw new Error("waitFor timeout");
+    }
+    await sleep(intervalMs);
+  }
+};
+
+class TestWorker extends Actor {
+  init(results: any[], event: any) {
+    results.push(event);
+    setTimeout(() => {
+      void this.context.system.stop(this.self);
+    }, 5);
+  }
+
+  handleCall(): undefined {
+    return undefined;
+  }
+
+  handleCast(): void {}
+}
+
+class ArgsWorker extends Actor {
+  init(results: Array<[string, any]>, marker: string, event: any) {
+    results.push([marker, event]);
+    setTimeout(() => {
+      void this.context.system.stop(this.self);
+    }, 5);
+  }
+
+  handleCall(): undefined {
+    return undefined;
+  }
+
+  handleCast(): void {}
+}
+
+class DelayWorker extends Actor {
+  init(
+    counters: {
+      current: { value: number };
+      max: { value: number };
+      done: any[];
+      delayMs: number;
+    },
+    event: any,
+  ) {
+    counters.current.value += 1;
+    if (counters.current.value > counters.max.value) {
+      counters.max.value = counters.current.value;
+    }
+    setTimeout(() => {
+      counters.current.value -= 1;
+      counters.done.push(event);
+      void this.context.system.stop(this.self);
+    }, counters.delayMs);
+  }
+
+  handleCall(): undefined {
+    return undefined;
+  }
+
+  handleCast(): void {}
+}
+
+class SlowWorker extends Actor {
+  init(results: any[], event: any) {
+    results.push(event);
+  }
+
+  handleCall(message: any): any {
+    return message;
+  }
+
+  handleCast(message: { type: "stop" }): void {
+    if (message.type === "stop") {
+      void this.context.system.stop(this.self);
+    }
+  }
+}
 
 describe("GenStage", () => {
   let system: ActorSystem;
@@ -631,6 +729,227 @@ describe("GenStage", () => {
       // Should not throw
       await consumer.stop();
       await sleep(20);
+      await producer.stop();
+    });
+  });
+
+  describe("ConsumerSupervisor", () => {
+    const startFiniteProducer = (
+      events: any[],
+      options?: ProducerOptions,
+    ): Producer => {
+      return Producer.start(system, {
+        init: () => 0,
+        handleDemand: (demand, cursor) => {
+          const next = events.slice(cursor, cursor + demand);
+          return [next, cursor + next.length];
+        },
+      }, options);
+    };
+
+    it("starts and stops cleanly", async () => {
+      const supervisor = ConsumerSupervisor.start(system, {
+        actorClass: TestWorker,
+        args: [[]],
+      });
+
+      expect(supervisor.getRef()).toBeDefined();
+      await supervisor.stop();
+    });
+
+    it("spawns a worker per event", async () => {
+      const processed: number[] = [];
+      const producer = startFiniteProducer([1, 2, 3, 4, 5]);
+      const supervisor = ConsumerSupervisor.start(system, {
+        actorClass: TestWorker,
+        args: [processed],
+      });
+
+      await supervisor.subscribe(producer.getRef(), { maxDemand: 5, minDemand: 2 });
+      await waitFor(() => processed.length === 5);
+
+      expect(processed.sort((a, b) => a - b)).toEqual([1, 2, 3, 4, 5]);
+
+      await supervisor.stop();
+      await producer.stop();
+    });
+
+    it("worker receives event as last init arg", async () => {
+      const received: Array<[string, number]> = [];
+      const producer = startFiniteProducer([10, 11, 12]);
+      const supervisor = ConsumerSupervisor.start(system, {
+        actorClass: ArgsWorker,
+        args: [received, "worker"],
+      });
+
+      await supervisor.subscribe(producer.getRef(), { maxDemand: 3, minDemand: 1 });
+      await waitFor(() => received.length === 3);
+
+      expect(received).toEqual([
+        ["worker", 10],
+        ["worker", 11],
+        ["worker", 12],
+      ]);
+
+      await supervisor.stop();
+      await producer.stop();
+    });
+
+    it("worker completion releases demand for more events", async () => {
+      const processed: number[] = [];
+      const allEvents = Array.from({ length: 20 }, (_, i) => i);
+      const producer = startFiniteProducer(allEvents);
+      const supervisor = ConsumerSupervisor.start(system, {
+        actorClass: TestWorker,
+        args: [processed],
+      });
+
+      await supervisor.subscribe(producer.getRef(), { maxDemand: 5, minDemand: 2 });
+      await waitFor(() => processed.length === 20);
+
+      expect(processed.length).toBeGreaterThan(5);
+      expect(processed.sort((a, b) => a - b)).toEqual(allEvents);
+
+      await supervisor.stop();
+      await producer.stop();
+    });
+
+    it("maxDemand limits concurrent workers", async () => {
+      const counters = {
+        current: { value: 0 },
+        max: { value: 0 },
+        done: [] as number[],
+        delayMs: 30,
+      };
+      const events = Array.from({ length: 12 }, (_, i) => i);
+      const producer = startFiniteProducer(events);
+      const supervisor = ConsumerSupervisor.start(system, {
+        actorClass: DelayWorker,
+        args: [counters],
+      });
+
+      await supervisor.subscribe(producer.getRef(), { maxDemand: 3, minDemand: 1 });
+      await waitFor(() => counters.done.length === events.length);
+
+      expect(counters.max.value).toBeLessThanOrEqual(3);
+
+      await supervisor.stop();
+      await producer.stop();
+    });
+
+    it("whichChildren returns active workers", async () => {
+      const started: number[] = [];
+      const producer = startFiniteProducer([1, 2, 3]);
+      const supervisor = ConsumerSupervisor.start(system, {
+        actorClass: SlowWorker,
+        args: [started],
+      });
+
+      await supervisor.subscribe(producer.getRef(), { maxDemand: 3, minDemand: 3 });
+      await waitFor(() => started.length === 3);
+
+      const children = await supervisor.whichChildren();
+      expect(children).toHaveLength(3);
+      for (const child of children) {
+        expect(child.className).toBe("SlowWorker");
+      }
+
+      await supervisor.stop();
+      await producer.stop();
+    });
+
+    it("countChildren returns correct counts", async () => {
+      const started: number[] = [];
+      const producer = startFiniteProducer([1, 2, 3, 4]);
+      const supervisor = ConsumerSupervisor.start(system, {
+        actorClass: SlowWorker,
+        args: [started],
+      });
+
+      await supervisor.subscribe(producer.getRef(), { maxDemand: 4, minDemand: 4 });
+      await waitFor(() => started.length === 4);
+
+      const counts = await supervisor.countChildren();
+      expect(counts).toEqual({ specs: 4, active: 4 });
+
+      await supervisor.stop();
+      await producer.stop();
+    });
+
+    it("cancel stops subscription", async () => {
+      const started: number[] = [];
+      const producer = Producer.start(system, {
+        init: () => 0,
+        handleDemand: (demand, cursor) => {
+          const events = Array.from({ length: demand }, (_, i) => cursor + i);
+          return [events, cursor + demand];
+        },
+      });
+      const supervisor = ConsumerSupervisor.start(system, {
+        actorClass: SlowWorker,
+        args: [started],
+      });
+
+      const sub = await supervisor.subscribe(producer.getRef(), { maxDemand: 5, minDemand: 2 });
+      await waitFor(() => started.length === 5);
+
+      const beforeCancel = started.length;
+      supervisor.cancel(sub);
+      await sleep(60);
+
+      expect(started.length).toBe(beforeCancel);
+
+      await supervisor.stop();
+      await producer.stop();
+    });
+
+    it("works with BroadcastDispatcher", async () => {
+      const processed: number[] = [];
+      const events = [0, 1, 2, 3, 4, 5];
+      const producer = startFiniteProducer(events, { dispatcher: { type: "broadcast" } });
+      const supervisor = ConsumerSupervisor.start(system, {
+        actorClass: TestWorker,
+        args: [processed],
+      });
+
+      await supervisor.subscribe(producer.getRef(), { maxDemand: 6, minDemand: 3 });
+      await waitFor(() => processed.length === events.length);
+
+      expect(processed.sort((a, b) => a - b)).toEqual(events);
+
+      await supervisor.stop();
+      await producer.stop();
+    });
+
+    it("works with PartitionDispatcher", async () => {
+      const processed: number[] = [];
+      const allEvents = Array.from({ length: 12 }, (_, i) => i);
+      const producer = startFiniteProducer(allEvents, {
+        dispatcher: {
+          type: "partition",
+          partitions: 2,
+          hash: (event: number) => event % 2,
+        },
+      });
+      const supervisor = ConsumerSupervisor.start(system, {
+        actorClass: TestWorker,
+        args: [processed],
+      });
+
+      await supervisor.subscribe(producer.getRef(), {
+        maxDemand: 6,
+        minDemand: 3,
+        partition: 1,
+      });
+      await waitFor(() => processed.length > 0);
+      await sleep(80);
+
+      expect(processed.length).toBeGreaterThan(0);
+      for (const event of processed) {
+        expect(event % 2).toBe(1);
+      }
+
+      await supervisor.stop();
       await producer.stop();
     });
   });

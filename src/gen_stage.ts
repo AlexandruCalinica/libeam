@@ -13,8 +13,16 @@
 //
 // Follows the Agent/DynamicSupervisor pattern: internal actor + typed wrapper.
 
-import { Actor, ActorRef } from "./actor";
+import {
+  Actor,
+  ActorRef,
+  ChildSupervisionOptions,
+  DownMessage,
+  InfoMessage,
+  WatchRef,
+} from "./actor";
 import { ActorSystem, SpawnOptions } from "./actor_system";
+import { ChildCounts, ChildInfo } from "./dynamic_supervisor";
 import { createLogger, Logger } from "./logger";
 
 // ============ Configuration ============
@@ -56,6 +64,17 @@ export interface SubscriptionOptions {
   cancel?: "permanent" | "transient" | "temporary";
   /** Partition to subscribe to (required for PartitionDispatcher). */
   partition?: number | string;
+}
+
+export interface ChildSpec {
+  actorClass: any;
+  args?: any[];
+  spawnOptions?: Omit<SpawnOptions, "strategy" | "role" | "args">;
+}
+
+export interface ConsumerSupervisorOptions {
+  maxRestarts?: number;
+  periodMs?: number;
 }
 
 // ============ Subscription Info ============
@@ -126,6 +145,10 @@ export interface ProducerConsumerCallbacks<TState> {
   ) => [events: any[], newState: TState];
 }
 
+export interface ConsumerSupervisorCallbacks<TState> {
+  init?: (...args: any[]) => TState;
+}
+
 // ============ Internal Protocol ============
 
 type StageCall =
@@ -142,6 +165,10 @@ type StageCast =
   | { __stage: "ask"; tag: string; demand: number }
   | { __stage: "events"; tag: string; producerRef: ActorRef; events: any[] }
   | { __stage: "cancel"; tag: string; reason: string };
+
+type ConsumerSupCall =
+  | { __consumerSup: "which_children" }
+  | { __consumerSup: "count_children" };
 
 // ============ Dispatcher Interface ============
 
@@ -688,6 +715,209 @@ class ConsumerStageActor extends Actor {
   }
 }
 
+class ConsumerSupervisorActor extends Actor {
+  private childSpec!: ChildSpec;
+  private maxRestarts = 3;
+  private periodMs = 5000;
+  private subscriptions = new Map<string, ConsumerSub>();
+  private activeWorkers = new Map<string, {
+    ref: ActorRef;
+    watchRef: WatchRef;
+    event: any;
+    subscriptionTag: string;
+  }>();
+  private releasedDemand = new Map<string, number>();
+  private log!: Logger;
+
+  init(childSpec: ChildSpec, options?: ConsumerSupervisorOptions, ..._args: any[]) {
+    this.childSpec = childSpec;
+    if (options?.maxRestarts !== undefined) this.maxRestarts = options.maxRestarts;
+    if (options?.periodMs !== undefined) this.periodMs = options.periodMs;
+    this.log = createLogger("GenStage.ConsumerSupervisor", this.context.system.id);
+  }
+
+  childSupervision(): ChildSupervisionOptions {
+    return {
+      strategy: "one-for-one",
+      maxRestarts: this.maxRestarts,
+      periodMs: this.periodMs,
+    };
+  }
+
+  handleCall(message: any): any {
+    const msg = message as ConsumerSupCall;
+    if (msg?.__consumerSup === "which_children") {
+      return this.getChildrenInfo();
+    }
+    if (msg?.__consumerSup === "count_children") {
+      return this.getChildrenCounts();
+    }
+    return undefined;
+  }
+
+  handleCast(message: any): void {
+    if (!message?.__stage) return;
+    const msg = message as StageCast;
+    switch (msg.__stage) {
+      case "events":
+        this.handleEvents(msg.tag, msg.producerRef, msg.events);
+        break;
+      case "cancel":
+        this.handleCancelFromProducer(msg.tag, msg.reason);
+        break;
+    }
+  }
+
+  handleInfo(message: InfoMessage): void {
+    if (message.type === "down") {
+      this.handleWorkerDown(message as DownMessage);
+    }
+  }
+
+  subscribeToProducer(producerRef: ActorRef, options: SubscriptionOptions): { tag: string } {
+    const tag = `sub-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const maxDemand = options.maxDemand ?? 1000;
+    const minDemand = options.minDemand ?? Math.floor(maxDemand * 0.75);
+
+    this.subscriptions.set(tag, {
+      producerRef,
+      pendingDemand: 0,
+      maxDemand,
+      minDemand,
+      cancel: options.cancel ?? "temporary",
+    });
+    this.releasedDemand.set(tag, 0);
+
+    return { tag };
+  }
+
+  sendInitialDemand(tag: string): void {
+    const sub = this.subscriptions.get(tag);
+    if (!sub) return;
+    this.askProducer(tag, sub, sub.maxDemand);
+  }
+
+  cancelSubscription(tag: string, reason: string): boolean {
+    const sub = this.subscriptions.get(tag);
+    if (!sub) return false;
+
+    sub.producerRef.cast({
+      __stage: "cancel",
+      tag,
+      reason,
+    } satisfies StageCast);
+
+    this.subscriptions.delete(tag);
+    this.releasedDemand.delete(tag);
+    return true;
+  }
+
+  cancelAll(reason: string): void {
+    for (const [tag, sub] of this.subscriptions) {
+      sub.producerRef.cast({
+        __stage: "cancel",
+        tag,
+        reason,
+      } satisfies StageCast);
+    }
+    this.subscriptions.clear();
+    this.releasedDemand.clear();
+  }
+
+  private handleEvents(tag: string, _producerRef: ActorRef, events: any[]): void {
+    const sub = this.subscriptions.get(tag);
+    if (!sub) return;
+
+    sub.pendingDemand -= events.length;
+    if (sub.pendingDemand < 0) sub.pendingDemand = 0;
+
+    for (const event of events) {
+      try {
+        const childRef = this.context.system.spawnChild(
+          this.self,
+          this.childSpec.actorClass,
+          {
+            ...this.childSpec.spawnOptions,
+            args: [...(this.childSpec.args || []), event],
+          },
+        );
+        const watchRef = this.watch(childRef);
+        this.activeWorkers.set(childRef.id.id, {
+          ref: childRef,
+          watchRef,
+          event,
+          subscriptionTag: tag,
+        });
+      } catch (error) {
+        this.log.error(
+          "Failed to spawn worker for event",
+          error instanceof Error ? error : undefined,
+          { tag },
+        );
+        this.releasedDemand.set(tag, (this.releasedDemand.get(tag) || 0) + 1);
+      }
+    }
+
+    this.maybeAskForMore(tag, sub);
+  }
+
+  private handleWorkerDown(down: DownMessage): void {
+    const workerId = down.actorRef.id.id;
+    const worker = this.activeWorkers.get(workerId);
+    if (!worker) return;
+
+    this.activeWorkers.delete(workerId);
+
+    const tag = worker.subscriptionTag;
+    const sub = this.subscriptions.get(tag);
+    if (sub) {
+      this.releasedDemand.set(tag, (this.releasedDemand.get(tag) || 0) + 1);
+      this.maybeAskForMore(tag, sub);
+    }
+  }
+
+  private maybeAskForMore(tag: string, sub: ConsumerSub): void {
+    const released = this.releasedDemand.get(tag) || 0;
+    if (released >= sub.minDemand) {
+      this.releasedDemand.set(tag, 0);
+      this.askProducer(tag, sub, released);
+    }
+  }
+
+  private askProducer(tag: string, sub: ConsumerSub, demand: number): void {
+    sub.pendingDemand += demand;
+    sub.producerRef.cast({
+      __stage: "ask",
+      tag,
+      demand,
+    } satisfies StageCast);
+  }
+
+  private handleCancelFromProducer(tag: string, _reason: string): void {
+    this.subscriptions.delete(tag);
+    this.releasedDemand.delete(tag);
+    this.log.debug("Producer cancelled subscription", { tag });
+  }
+
+  private getChildrenInfo(): ChildInfo[] {
+    const result: ChildInfo[] = [];
+    for (const worker of this.activeWorkers.values()) {
+      const metadata = this.context.system.getActorMetadata(worker.ref.id.id);
+      result.push({
+        ref: worker.ref,
+        className: metadata?.actorClass?.name || "Unknown",
+        name: worker.ref.id.name,
+      });
+    }
+    return result;
+  }
+
+  private getChildrenCounts(): ChildCounts {
+    const count = this.activeWorkers.size;
+    return { specs: count, active: count };
+  }
+}
+
 // ============ ProducerConsumerStageActor ============
 
 /**
@@ -1046,6 +1276,73 @@ export class Consumer {
   }
 
   /** Get the consumer's ActorRef. */
+  getRef(): ActorRef {
+    return this.actorRef;
+  }
+}
+
+export class ConsumerSupervisor {
+  private readonly actor: ConsumerSupervisorActor;
+
+  private constructor(
+    private readonly actorRef: ActorRef,
+    private readonly system: ActorSystem,
+  ) {
+    this.actor = system.getActor(actorRef.id.id) as ConsumerSupervisorActor;
+  }
+
+  static start(
+    system: ActorSystem,
+    childSpec: ChildSpec,
+    options?: ConsumerSupervisorOptions,
+    spawnOptions: SpawnOptions = {},
+  ): ConsumerSupervisor {
+    const ref = system.spawn(ConsumerSupervisorActor, {
+      ...spawnOptions,
+      args: [childSpec, options],
+    });
+    return new ConsumerSupervisor(ref, system);
+  }
+
+  async subscribe(
+    producerRef: ActorRef,
+    options: SubscriptionOptions = {},
+  ): Promise<SubscriptionRef> {
+    const maxDemand = options.maxDemand ?? 1000;
+    const minDemand = options.minDemand ?? Math.floor(maxDemand * 0.75);
+
+    const { tag } = this.actor.subscribeToProducer(producerRef, options);
+
+    await producerRef.call({
+      __stage: "subscribe",
+      tag,
+      consumerRef: this.actorRef,
+      maxDemand,
+      minDemand,
+      partition: options.partition,
+    } satisfies StageCall);
+
+    this.actor.sendInitialDemand(tag);
+    return { tag, producerRef };
+  }
+
+  cancel(ref: SubscriptionRef): boolean {
+    return this.actor.cancelSubscription(ref.tag, "cancel");
+  }
+
+  whichChildren(): Promise<ChildInfo[]> {
+    return this.actorRef.call({ __consumerSup: "which_children" } satisfies ConsumerSupCall);
+  }
+
+  countChildren(): Promise<ChildCounts> {
+    return this.actorRef.call({ __consumerSup: "count_children" } satisfies ConsumerSupCall);
+  }
+
+  async stop(): Promise<void> {
+    this.actor.cancelAll("shutdown");
+    return this.system.stop(this.actorRef);
+  }
+
   getRef(): ActorRef {
     return this.actorRef;
   }
