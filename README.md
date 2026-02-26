@@ -2153,19 +2153,19 @@ GenStage pipeline benchmarks measured on a single node (Apple Silicon, Node.js).
 
 | Scenario | Throughput | Mean Latency |
 |----------|-----------|-------------|
-| 10k events, maxDemand=100 | ~240 ops/s | ~4.2 ms |
-| 10k events, maxDemand=1000 | ~598 ops/s | ~1.7 ms |
+| 10k events, maxDemand=100 | ~675 ops/s | ~1.5 ms |
+| 10k events, maxDemand=1000 | ~723 ops/s | ~1.4 ms |
 
-Larger `maxDemand` reduces demand round-trips, yielding ~2.5× throughput improvement.
+Larger `maxDemand` reduces demand round-trips, though the gap narrows with synchronous demand optimization.
 
 ### Fan-out: DemandDispatcher
 
 | Consumers | Throughput | Mean Latency |
 |-----------|-----------|-------------|
-| 1 | ~247 ops/s | ~4.1 ms |
-| 2 | ~358 ops/s | ~2.8 ms |
-| 4 | ~356 ops/s | ~2.8 ms |
-| 8 | ~350 ops/s | ~2.9 ms |
+| 1 | ~687 ops/s | ~1.5 ms |
+| 2 | ~695 ops/s | ~1.4 ms |
+| 4 | ~681 ops/s | ~1.5 ms |
+| 8 | ~739 ops/s | ~1.4 ms |
 
 DemandDispatcher scales well — adding consumers has minimal overhead since events are distributed (not duplicated).
 
@@ -2173,10 +2173,10 @@ DemandDispatcher scales well — adding consumers has minimal overhead since eve
 
 | Consumers | Throughput | Mean Latency | Events/consumer |
 |-----------|-----------|-------------|-----------------|
-| 1 | ~498 ops/s | ~2.0 ms | 2,000 |
-| 2 | ~433 ops/s | ~2.3 ms | 2,000 |
-| 4 | ~345 ops/s | ~2.9 ms | 2,000 |
-| 8 | ~246 ops/s | ~4.1 ms | 2,000 |
+| 1 | ~826 ops/s | ~1.2 ms | 2,000 |
+| 2 | ~662 ops/s | ~1.5 ms | 2,000 |
+| 4 | ~645 ops/s | ~1.6 ms | 2,000 |
+| 8 | ~627 ops/s | ~1.6 ms | 2,000 |
 
 Broadcast sends all events to every consumer, so cost scales linearly with consumer count.
 
@@ -2184,26 +2184,26 @@ Broadcast sends all events to every consumer, so cost scales linearly with consu
 
 | Partitions | Throughput | Mean Latency |
 |------------|-----------|-------------|
-| 2 | ~145 ops/s | ~6.9 ms |
-| 4 | ~156 ops/s | ~6.4 ms |
-| 8 | ~155 ops/s | ~6.4 ms |
+| 2 | ~510 ops/s | ~2.0 ms |
+| 4 | ~532 ops/s | ~1.9 ms |
+| 8 | ~516 ops/s | ~1.9 ms |
 
 ### Pipeline Depth
 
 | Hops | Throughput | Mean Latency |
 |------|-----------|-------------|
-| P → C (1 hop) | ~247 ops/s | ~4.0 ms |
-| P → PC → C (2 hops) | ~183 ops/s | ~5.5 ms |
-| P → PC → PC → C (3 hops) | ~182 ops/s | ~5.5 ms |
+| P → C (1 hop) | ~680 ops/s | ~1.5 ms |
+| P → PC → C (2 hops) | ~621 ops/s | ~1.6 ms |
+| P → PC → PC → C (3 hops) | ~601 ops/s | ~1.7 ms |
 
-Each ProducerConsumer hop adds ~1.5 ms of latency for 10k events.
+Each ProducerConsumer hop adds ~0.1 ms of latency for 10k events.
 
 ### ConsumerSupervisor
 
 | maxDemand | Throughput | Mean Latency | Events |
 |-----------|-----------|-------------|--------|
-| 5 | ~13 ops/s | ~76 ms | 200 |
-| 10 | ~30 ops/s | ~34 ms | 200 |
+| 5 | ~13 ops/s | ~75 ms | 200 |
+| 10 | ~30 ops/s | ~33 ms | 200 |
 | 20 | ~66 ops/s | ~15 ms | 200 |
 
 Higher `maxDemand` allows more concurrent workers, reducing wall-clock time.
@@ -2212,9 +2212,9 @@ Higher `maxDemand` allows more concurrent workers, reducing wall-clock time.
 
 | Dispatcher | Throughput | Mean Latency |
 |-----------|-----------|-------------|
-| DemandDispatcher | ~357 ops/s | ~2.8 ms |
-| BroadcastDispatcher | ~347 ops/s | ~2.9 ms |
-| PartitionDispatcher | ~156 ops/s | ~6.4 ms |
+| DemandDispatcher | ~675 ops/s | ~1.5 ms |
+| BroadcastDispatcher | ~654 ops/s | ~1.5 ms |
+| PartitionDispatcher | ~515 ops/s | ~1.9 ms |
 
 ## License
 
