@@ -981,6 +981,7 @@ await consumer.subscribe(multiplier.getRef(), { maxDemand: 50 });
 
 - `Producer.start(system, callbacks, options?, spawnOptions?): Producer` — Create a producer
 - `stop(): Promise<void>` — Stop the producer
+- `demand(mode): void` — Switch demand mode (call with `"forward"` to resume after `demand: "accumulate"`)
 - `getRef(): ActorRef` — Get the producer's ref (for consumer subscriptions)
 
 **Consumer Methods:**
@@ -1053,7 +1054,28 @@ await consumer1.subscribe(producer.getRef(), { maxDemand: 10, partition: 1 });
 
 - All consumers receive the same events (fan-out)
 - Demand = `min(all consumer demands)` — slowest consumer throttles the pipeline
-- New subscriber joining pauses dispatch until it sends demand
+- Sequential subscribes are safe — initial demand is deferred to ensure all consumers register before events flow
+
+**Demand Mode (`demand: "accumulate"`):**
+
+For complex topologies where you need deterministic setup, start the producer in accumulate mode:
+
+```typescript
+const producer = Producer.start(system, callbacks, {
+  dispatcher: { type: "broadcast" },
+  demand: "accumulate",  // Pauses event production
+});
+
+// Subscribe all consumers (order doesn't matter)
+await consumer1.subscribe(producer.getRef(), { maxDemand: 10 });
+await consumer2.subscribe(producer.getRef(), { maxDemand: 10 });
+await consumer3.subscribe(producer.getRef(), { maxDemand: 10 });
+
+// Resume — now all consumers receive the same events
+producer.demand("forward");
+```
+
+Inspired by Elixir's `{:producer, state, demand: :accumulate}`.
 
 **PartitionDispatcher behavior:**
 
@@ -1065,7 +1087,7 @@ await consumer1.subscribe(producer.getRef(), { maxDemand: 10, partition: 1 });
 
 **Back-pressure behavior:**
 
-- Consumer sends initial demand of `maxDemand` on subscribe
+- Consumer sends initial demand of `maxDemand` on subscribe (deferred to next tick for broadcast safety)
 - When pending demand drops to `minDemand`, consumer automatically re-asks
 - Producer never emits more events than total demand from all consumers
 - Excess events are buffered in the producer (configurable `bufferSize`, default: 10000)
@@ -2122,6 +2144,77 @@ pnpm test:watch
 # Type check
 pnpm typecheck
 ```
+
+## Performance
+
+GenStage pipeline benchmarks measured on a single node (Apple Silicon, Node.js). Run with `pnpm bench`.
+
+### Baseline: Producer → Consumer
+
+| Scenario | Throughput | Mean Latency |
+|----------|-----------|-------------|
+| 10k events, maxDemand=100 | ~240 ops/s | ~4.2 ms |
+| 10k events, maxDemand=1000 | ~598 ops/s | ~1.7 ms |
+
+Larger `maxDemand` reduces demand round-trips, yielding ~2.5× throughput improvement.
+
+### Fan-out: DemandDispatcher
+
+| Consumers | Throughput | Mean Latency |
+|-----------|-----------|-------------|
+| 1 | ~247 ops/s | ~4.1 ms |
+| 2 | ~358 ops/s | ~2.8 ms |
+| 4 | ~356 ops/s | ~2.8 ms |
+| 8 | ~350 ops/s | ~2.9 ms |
+
+DemandDispatcher scales well — adding consumers has minimal overhead since events are distributed (not duplicated).
+
+### Fan-out: BroadcastDispatcher
+
+| Consumers | Throughput | Mean Latency | Events/consumer |
+|-----------|-----------|-------------|-----------------|
+| 1 | ~498 ops/s | ~2.0 ms | 2,000 |
+| 2 | ~433 ops/s | ~2.3 ms | 2,000 |
+| 4 | ~345 ops/s | ~2.9 ms | 2,000 |
+| 8 | ~246 ops/s | ~4.1 ms | 2,000 |
+
+Broadcast sends all events to every consumer, so cost scales linearly with consumer count.
+
+### Routing: PartitionDispatcher
+
+| Partitions | Throughput | Mean Latency |
+|------------|-----------|-------------|
+| 2 | ~145 ops/s | ~6.9 ms |
+| 4 | ~156 ops/s | ~6.4 ms |
+| 8 | ~155 ops/s | ~6.4 ms |
+
+### Pipeline Depth
+
+| Hops | Throughput | Mean Latency |
+|------|-----------|-------------|
+| P → C (1 hop) | ~247 ops/s | ~4.0 ms |
+| P → PC → C (2 hops) | ~183 ops/s | ~5.5 ms |
+| P → PC → PC → C (3 hops) | ~182 ops/s | ~5.5 ms |
+
+Each ProducerConsumer hop adds ~1.5 ms of latency for 10k events.
+
+### ConsumerSupervisor
+
+| maxDemand | Throughput | Mean Latency | Events |
+|-----------|-----------|-------------|--------|
+| 5 | ~13 ops/s | ~76 ms | 200 |
+| 10 | ~30 ops/s | ~34 ms | 200 |
+| 20 | ~66 ops/s | ~15 ms | 200 |
+
+Higher `maxDemand` allows more concurrent workers, reducing wall-clock time.
+
+### Dispatcher Comparison (4 consumers, same workload)
+
+| Dispatcher | Throughput | Mean Latency |
+|-----------|-----------|-------------|
+| DemandDispatcher | ~357 ops/s | ~2.8 ms |
+| BroadcastDispatcher | ~347 ops/s | ~2.9 ms |
+| PartitionDispatcher | ~156 ops/s | ~6.4 ms |
 
 ## License
 

@@ -303,7 +303,7 @@ describe("GenStage", () => {
   });
 
   describe("BroadcastDispatcher", () => {
-    it("sends all events to all consumers", async () => {
+    it("sends all events to all consumers (sequential subscribe)", async () => {
       const received1: number[] = [];
       const received2: number[] = [];
 
@@ -322,10 +322,10 @@ describe("GenStage", () => {
         handleEvents: (events, _from, state) => { received2.push(...events); return state; },
       });
 
-      await Promise.all([
-        consumer1.subscribe(producer.getRef(), { maxDemand: 10, minDemand: 5 }),
-        consumer2.subscribe(producer.getRef(), { maxDemand: 10, minDemand: 5 }),
-      ]);
+      // Sequential subscribe — the Phase 1 fix ensures both consumers
+      // register before any initial demand is processed.
+      await consumer1.subscribe(producer.getRef(), { maxDemand: 10, minDemand: 5 });
+      await consumer2.subscribe(producer.getRef(), { maxDemand: 10, minDemand: 5 });
       await sleep(100);
 
       expect(received1.length).toBeGreaterThan(0);
@@ -356,10 +356,9 @@ describe("GenStage", () => {
         handleEvents: (events, _from, state) => { received2.push(...events); return state; },
       });
 
-      await Promise.all([
-        consumer1.subscribe(producer.getRef(), { maxDemand: 10, minDemand: 5 }),
-        consumer2.subscribe(producer.getRef(), { maxDemand: 3, minDemand: 1 }),
-      ]);
+      // Sequential subscribe — no Promise.all workaround needed
+      await consumer1.subscribe(producer.getRef(), { maxDemand: 10, minDemand: 5 });
+      await consumer2.subscribe(producer.getRef(), { maxDemand: 3, minDemand: 1 });
       await sleep(100);
 
       expect(received1.slice(0, received2.length)).toEqual(received2.slice(0, received2.length));
@@ -394,6 +393,122 @@ describe("GenStage", () => {
       await producer.stop();
     });
   });
+
+    it("sequential subscribe with 3 consumers all receive same events", async () => {
+      const received1: number[] = [];
+      const received2: number[] = [];
+      const received3: number[] = [];
+
+      const producer = Producer.start(system, {
+        init: () => 0,
+        handleDemand: (demand, counter) => {
+          const events = Array.from({ length: demand }, (_, i) => counter + i);
+          return [events, counter + demand];
+        },
+      }, { dispatcher: { type: "broadcast" } });
+
+      const consumer1 = Consumer.start(system, {
+        handleEvents: (events, _from, state) => { received1.push(...events); return state; },
+      });
+      const consumer2 = Consumer.start(system, {
+        handleEvents: (events, _from, state) => { received2.push(...events); return state; },
+      });
+      const consumer3 = Consumer.start(system, {
+        handleEvents: (events, _from, state) => { received3.push(...events); return state; },
+      });
+
+      // All sequential — no Promise.all
+      await consumer1.subscribe(producer.getRef(), { maxDemand: 10, minDemand: 5 });
+      await consumer2.subscribe(producer.getRef(), { maxDemand: 10, minDemand: 5 });
+      await consumer3.subscribe(producer.getRef(), { maxDemand: 10, minDemand: 5 });
+      await sleep(100);
+
+      expect(received1.length).toBeGreaterThan(0);
+      expect(received2.length).toBeGreaterThan(0);
+      expect(received3.length).toBeGreaterThan(0);
+      // All three must receive the same initial events
+      const len = Math.min(received1.length, received2.length, received3.length);
+      expect(received1.slice(0, len)).toEqual(received2.slice(0, len));
+      expect(received2.slice(0, len)).toEqual(received3.slice(0, len));
+
+      await consumer1.stop();
+      await consumer2.stop();
+      await consumer3.stop();
+      await producer.stop();
+    });
+
+    it("demand: accumulate pauses until demand('forward') is called", async () => {
+      const received1: number[] = [];
+      const received2: number[] = [];
+
+      const producer = Producer.start(system, {
+        init: () => 0,
+        handleDemand: (demand, counter) => {
+          const events = Array.from({ length: demand }, (_, i) => counter + i);
+          return [events, counter + demand];
+        },
+      }, { dispatcher: { type: "broadcast" }, demand: "accumulate" });
+
+      const consumer1 = Consumer.start(system, {
+        handleEvents: (events, _from, state) => { received1.push(...events); return state; },
+      });
+      const consumer2 = Consumer.start(system, {
+        handleEvents: (events, _from, state) => { received2.push(...events); return state; },
+      });
+
+      await consumer1.subscribe(producer.getRef(), { maxDemand: 10, minDemand: 5 });
+      await consumer2.subscribe(producer.getRef(), { maxDemand: 10, minDemand: 5 });
+
+      // No events should flow yet (demand is accumulated)
+      await sleep(50);
+      expect(received1.length).toBe(0);
+      expect(received2.length).toBe(0);
+
+      // Resume event production
+      producer.demand("forward");
+      await sleep(100);
+
+      // Both should now have received events
+      expect(received1.length).toBeGreaterThan(0);
+      expect(received2.length).toBeGreaterThan(0);
+      expect(received1.slice(0, 10)).toEqual(received2.slice(0, 10));
+
+      await consumer1.stop();
+      await consumer2.stop();
+      await producer.stop();
+    });
+
+    it("demand: accumulate works with DemandDispatcher too", async () => {
+      const received: number[] = [];
+
+      const producer = Producer.start(system, {
+        init: () => 0,
+        handleDemand: (demand, counter) => {
+          const events = Array.from({ length: demand }, (_, i) => counter + i);
+          return [events, counter + demand];
+        },
+      }, { demand: "accumulate" });
+
+      const consumer = Consumer.start(system, {
+        handleEvents: (events, _from, state) => { received.push(...events); return state; },
+      });
+
+      await consumer.subscribe(producer.getRef(), { maxDemand: 10, minDemand: 5 });
+
+      // No events yet
+      await sleep(50);
+      expect(received.length).toBe(0);
+
+      // Resume
+      producer.demand("forward");
+      await sleep(50);
+
+      expect(received.length).toBeGreaterThanOrEqual(10);
+      expect(received.slice(0, 10)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+
+      await consumer.stop();
+      await producer.stop();
+    });
 
   describe("PartitionDispatcher", () => {
     it("routes events to correct partition by hash", async () => {

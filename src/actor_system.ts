@@ -221,6 +221,7 @@ export class ActorSystem implements HealthCheckable {
   private _isRunning = false;
   private readonly pausedMailboxes = new Set<string>();
   private readonly processingActors = new Set<string>();
+  private readonly mailboxScheduled = new Set<string>();
 
   constructor(
     cluster: Cluster,
@@ -390,6 +391,7 @@ export class ActorSystem implements HealthCheckable {
         this.actors.delete(id);
         this.mailboxes.delete(id);
         this.actorMetadata.delete(id);
+        this.mailboxScheduled.delete(id);
       }
     });
 
@@ -625,6 +627,7 @@ export class ActorSystem implements HealthCheckable {
     this.actorMetadata.delete(actorId);
     this.pausedMailboxes.delete(actorId);
     this.processingActors.delete(actorId);
+    this.mailboxScheduled.delete(actorId);
   }
 
   private async _drainMailboxes(timeout: number): Promise<void> {
@@ -761,7 +764,7 @@ export class ActorSystem implements HealthCheckable {
           this.supervisor.handleCrash(actorRef, err);
         });
 
-      this.processMailbox(instanceId);
+      this.scheduleProcessMailbox(instanceId);
     } else {
       // Remote spawn is a fire-and-forget operation
       this.transport.send(targetNodeId, {
@@ -863,7 +866,7 @@ export class ActorSystem implements HealthCheckable {
         this.supervisor.handleCrash(actorRef, err);
       });
 
-    this.processMailbox(instanceId);
+    this.scheduleProcessMailbox(instanceId);
 
     this.log.debug("Spawned child actor", {
       childId: instanceId,
@@ -2488,6 +2491,7 @@ export class ActorSystem implements HealthCheckable {
     if (mailbox && messages.length > 0) {
       // Prepend messages to front of mailbox (preserving original order)
       mailbox.unshift(...messages);
+      this.scheduleProcessMailbox(actorRef.id.id);
       this.log.debug("Unstashed messages", {
         actorId: actorRef.id.id,
         count: messages.length,
@@ -2552,6 +2556,7 @@ export class ActorSystem implements HealthCheckable {
       this.actors.delete(id);
       this.mailboxes.delete(id);
       this.actorMetadata.delete(id);
+      this.mailboxScheduled.delete(id);
 
       this.log.debug("Stopped actor", {
         actorId: id,
@@ -2654,6 +2659,7 @@ export class ActorSystem implements HealthCheckable {
       this.actors.delete(id);
       this.mailboxes.delete(id);
       this.actorMetadata.delete(id);
+      this.mailboxScheduled.delete(id);
     }
   }
 
@@ -2709,6 +2715,8 @@ export class ActorSystem implements HealthCheckable {
           if (!enqueued) {
             clearTimeout(timer);
             reject(new MailboxFullError());
+          } else {
+            this.scheduleProcessMailbox(id);
           }
         } catch (err) {
           clearTimeout(timer);
@@ -2721,7 +2729,29 @@ export class ActorSystem implements HealthCheckable {
     }
   }
 
-  async dispatchCast(actorId: ActorId, message: any): Promise<void> {
+  dispatchCast(actorId: ActorId, message: any): void {
+    const { id, name, systemId } = actorId;
+
+    // Fast path: local unnamed actor (most GenStage traffic)
+    if (!name && systemId === this.id) {
+      if (!this.actors.has(id)) return;
+      const mailbox = this.mailboxes.get(id);
+      if (mailbox) {
+        try {
+          mailbox.enqueue({ type: "cast", message });
+          this.scheduleProcessMailbox(id);
+        } catch (err) {
+          if (!(err instanceof MailboxFullError)) throw err;
+        }
+      }
+      return;
+    }
+
+    // Slow path: named or remote actor
+    this._dispatchCastAsync(actorId, message);
+  }
+
+  private async _dispatchCastAsync(actorId: ActorId, message: any): Promise<void> {
     const { id, name, systemId } = actorId;
 
     const location = name ? await this.registry.lookup(name) : null;
@@ -2735,11 +2765,11 @@ export class ActorSystem implements HealthCheckable {
     }
 
     if (nodeId === this.id && this.actors.has(id)) {
-      // Local actor
       const mailbox = this.mailboxes.get(id);
       if (mailbox) {
         try {
           mailbox.enqueue({ type: "cast", message });
+          this.scheduleProcessMailbox(id);
         } catch (err) {
           if (!(err instanceof MailboxFullError)) {
             throw err;
@@ -2747,7 +2777,6 @@ export class ActorSystem implements HealthCheckable {
         }
       }
     } else {
-      // Remote actor
       await this.transport.send(nodeId, {
         type: "cast",
         actorId,
@@ -3253,7 +3282,7 @@ export class ActorSystem implements HealthCheckable {
           this.supervisor.handleCrash(actorRef, err);
         });
 
-      this.processMailbox(childInstanceId);
+      this.scheduleProcessMailbox(childInstanceId);
 
       this.log.debug("Remote child spawned successfully", {
         childInstanceId,
@@ -4129,60 +4158,80 @@ export class ActorSystem implements HealthCheckable {
     }
   }
 
+  /**
+   * Schedule mailbox processing for an actor if not already scheduled.
+   * Uses setImmediate to avoid unbounded microtask queue growth
+   * when actors cast to each other in tight loops.
+   */
+  private scheduleProcessMailbox(id: string): void {
+    if (this.mailboxScheduled.has(id)) return;
+    if (this.pausedMailboxes.has(id)) return;
+    if (!this.actors.has(id)) return;
+    this.mailboxScheduled.add(id);
+    setImmediate(() => this.processMailbox(id));
+  }
+
   private async processMailbox(id: string): Promise<void> {
     const mailbox = this.mailboxes.get(id);
     const actor = this.actors.get(id);
 
-    if (!mailbox || !actor) return;
-
-    if (this.pausedMailboxes.has(id)) {
+    if (!mailbox || !actor || this.pausedMailboxes.has(id)) {
+      this.mailboxScheduled.delete(id);
       return;
     }
 
-    if (mailbox.length > 0) {
-      const stashedMessage = mailbox.dequeue()!;
-
-      actor.context.currentMessage = stashedMessage;
-
-      this._resetIdleTimeout(id, actor);
-
-      this.processingActors.add(id);
-
-      try {
-        if (stashedMessage.type === "cast") {
-          await Promise.resolve(actor.handleCast(stashedMessage.message));
-        } else if (stashedMessage.type === "call") {
-          try {
-            const result = await Promise.resolve(
-              actor.handleCall(stashedMessage.message),
-            );
-            const wasStashed = actor.context.stash.includes(stashedMessage);
-            if (!wasStashed && stashedMessage.resolve) {
-              stashedMessage.resolve(result);
-            }
-          } catch (err) {
-            const wasStashed = actor.context.stash.includes(stashedMessage);
-            if (!wasStashed && stashedMessage.reject) {
-              stashedMessage.reject(err);
-            } else if (!wasStashed) {
-              throw err;
-            }
-          }
-        }
-      } catch (err) {
-        this.supervisor.handleCrash(actor.self, err);
-      } finally {
-        actor.context.currentMessage = undefined;
-        this.processingActors.delete(id);
-      }
+    if (mailbox.length === 0) {
+      this.mailboxScheduled.delete(id);
+      return;
     }
 
+    const stashedMessage = mailbox.dequeue()!;
+
+    actor.context.currentMessage = stashedMessage;
+
+    this._resetIdleTimeout(id, actor);
+
+    this.processingActors.add(id);
+
+    try {
+      if (stashedMessage.type === "cast") {
+        await Promise.resolve(actor.handleCast(stashedMessage.message));
+      } else if (stashedMessage.type === "call") {
+        try {
+          const result = await Promise.resolve(
+            actor.handleCall(stashedMessage.message),
+          );
+          const wasStashed = actor.context.stash.includes(stashedMessage);
+          if (!wasStashed && stashedMessage.resolve) {
+            stashedMessage.resolve(result);
+          }
+        } catch (err) {
+          const wasStashed = actor.context.stash.includes(stashedMessage);
+          if (!wasStashed && stashedMessage.reject) {
+            stashedMessage.reject(err);
+          } else if (!wasStashed) {
+            throw err;
+          }
+        }
+      }
+    } catch (err) {
+      this.supervisor.handleCrash(actor.self, err);
+    } finally {
+      actor.context.currentMessage = undefined;
+      this.processingActors.delete(id);
+    }
+
+    // Continue processing if more messages and actor is still alive.
+    // Use setImmediate for fairness — yields to event loop between messages.
     if (
       this.actors.has(id) &&
       this.mailboxes.has(id) &&
-      !this.pausedMailboxes.has(id)
+      !this.pausedMailboxes.has(id) &&
+      mailbox.length > 0
     ) {
-      setTimeout(() => this.processMailbox(id), 0);
+      setImmediate(() => this.processMailbox(id));
+    } else {
+      this.mailboxScheduled.delete(id);
     }
   }
 
@@ -4202,7 +4251,7 @@ export class ActorSystem implements HealthCheckable {
     const wasPaused = this.pausedMailboxes.delete(actorId);
     if (wasPaused) {
       this.log.debug("Mailbox resumed", { actorId });
-      this.processMailbox(actorId);
+      this.scheduleProcessMailbox(actorId);
     }
     return wasPaused;
   }
@@ -4253,6 +4302,7 @@ export class ActorSystem implements HealthCheckable {
     }
 
     mailbox.unshift(...messages);
+    this.scheduleProcessMailbox(actorId);
 
     this.log.debug("Messages injected", {
       actorId,
@@ -4435,6 +4485,7 @@ export class ActorSystem implements HealthCheckable {
           this.actors.delete(instanceId);
           this.mailboxes.delete(instanceId);
           this.actorMetadata.delete(instanceId);
+          this.mailboxScheduled.delete(instanceId);
           return {
             success: false,
             error: "Failed to confirm name reservation",
@@ -4444,7 +4495,7 @@ export class ActorSystem implements HealthCheckable {
         await this.registry.register(actorName, this.id, instanceId);
       }
 
-      this.processMailbox(instanceId);
+      this.scheduleProcessMailbox(instanceId);
 
       this.log.info("Actor migrated successfully", {
         actorName,

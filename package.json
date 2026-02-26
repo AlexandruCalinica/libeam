@@ -8,7 +8,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "check": "npm run typecheck && npm run test",
-    "example:chat": "ts-node examples/chat.ts"
+    "example:chat": "ts-node examples/chat.ts",
+    "bench": "vitest bench"
   },
   "keywords": [],
   "author": "",
