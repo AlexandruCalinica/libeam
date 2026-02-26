@@ -2785,6 +2785,53 @@ export class ActorSystem implements HealthCheckable {
     }
   }
 
+  /**
+   * Synchronously process a cast message on a local actor without going through
+   * the mailbox/setImmediate cycle. Used by GenStage consumers to collapse the
+   * demand → emit → process pipeline into a tight synchronous loop.
+   *
+   * Returns true if the message was processed synchronously.
+   * Returns false if sync processing is not possible (actor not found,
+   * already being processed, async handler, or paused).
+   *
+   * SAFETY: Only safe for local actors where the caller knows the handler
+   * is synchronous. If the handler returns a Promise, this method returns
+   * false and the caller must fall back to normal cast().
+   */
+  _syncLocalCast(actorId: string, message: any): boolean {
+    // Guard: actor must exist and not be paused
+    const actor = this.actors.get(actorId);
+    if (!actor) return false;
+    if (this.pausedMailboxes.has(actorId)) return false;
+
+    // Guard: prevent re-entrant processing
+    if (this.processingActors.has(actorId)) return false;
+
+    const prevMessage = actor.context.currentMessage;
+    actor.context.currentMessage = { type: "cast", message };
+    this._resetIdleTimeout(actorId, actor);
+    this.processingActors.add(actorId);
+
+    try {
+      const result = actor.handleCast(message);
+      // If handler returns a Promise, we can't process synchronously.
+      // Enqueue normally and let processMailbox handle it.
+      if (result && typeof (result as any).then === "function") {
+        // Restore state — message was not fully processed
+        actor.context.currentMessage = prevMessage;
+        this.processingActors.delete(actorId);
+        return false;
+      }
+      return true;
+    } catch (err) {
+      this.supervisor.handleCrash(actor.self, err);
+      return true; // Crash was handled
+    } finally {
+      actor.context.currentMessage = prevMessage;
+      this.processingActors.delete(actorId);
+    }
+  }
+
   private async _handleRpcCall(rpcMessage: any): Promise<any> {
     // Handle heartbeat:ping RPC
     if (rpcMessage.type === "heartbeat:ping") {
@@ -4171,6 +4218,13 @@ export class ActorSystem implements HealthCheckable {
     setImmediate(() => this.processMailbox(id));
   }
 
+  /**
+   * Maximum messages processed per setImmediate tick before yielding.
+   * Batching dramatically reduces event-loop round-trip overhead.
+   * Elixir's BEAM uses ~4000 reductions; 64 is conservative but safe.
+   */
+  private static readonly MAILBOX_BATCH_SIZE = 64;
+
   private async processMailbox(id: string): Promise<void> {
     const mailbox = this.mailboxes.get(id);
     const actor = this.actors.get(id);
@@ -4185,44 +4239,62 @@ export class ActorSystem implements HealthCheckable {
       return;
     }
 
-    const stashedMessage = mailbox.dequeue()!;
+    let processed = 0;
+    const batchSize = ActorSystem.MAILBOX_BATCH_SIZE;
 
-    actor.context.currentMessage = stashedMessage;
+    while (
+      processed < batchSize &&
+      mailbox.length > 0 &&
+      this.actors.has(id) &&
+      !this.pausedMailboxes.has(id)
+    ) {
+      const stashedMessage = mailbox.dequeue()!;
+      actor.context.currentMessage = stashedMessage;
+      this._resetIdleTimeout(id, actor);
+      this.processingActors.add(id);
 
-    this._resetIdleTimeout(id, actor);
-
-    this.processingActors.add(id);
-
-    try {
-      if (stashedMessage.type === "cast") {
-        await Promise.resolve(actor.handleCast(stashedMessage.message));
-      } else if (stashedMessage.type === "call") {
-        try {
-          const result = await Promise.resolve(
-            actor.handleCall(stashedMessage.message),
-          );
-          const wasStashed = actor.context.stash.includes(stashedMessage);
-          if (!wasStashed && stashedMessage.resolve) {
-            stashedMessage.resolve(result);
+      try {
+        if (stashedMessage.type === "cast") {
+          // Fast path: skip Promise.resolve for synchronous handlers
+          const result = actor.handleCast(stashedMessage.message);
+          if (result && typeof (result as any).then === "function") {
+            await result;
           }
-        } catch (err) {
-          const wasStashed = actor.context.stash.includes(stashedMessage);
-          if (!wasStashed && stashedMessage.reject) {
-            stashedMessage.reject(err);
-          } else if (!wasStashed) {
-            throw err;
+        } else if (stashedMessage.type === "call") {
+          try {
+            let result = actor.handleCall(stashedMessage.message);
+            if (result && typeof (result as any).then === "function") {
+              result = await result;
+            }
+            const wasStashed = actor.context.stash.includes(stashedMessage);
+            if (!wasStashed && stashedMessage.resolve) {
+              stashedMessage.resolve(result);
+            }
+          } catch (err) {
+            const wasStashed = actor.context.stash.includes(stashedMessage);
+            if (!wasStashed && stashedMessage.reject) {
+              stashedMessage.reject(err);
+            } else if (!wasStashed) {
+              throw err;
+            }
           }
         }
+      } catch (err) {
+        this.supervisor.handleCrash(actor.self, err);
+        // After crash, stop processing this actor's batch
+        actor.context.currentMessage = undefined;
+        this.processingActors.delete(id);
+        break;
+      } finally {
+        actor.context.currentMessage = undefined;
+        this.processingActors.delete(id);
       }
-    } catch (err) {
-      this.supervisor.handleCrash(actor.self, err);
-    } finally {
-      actor.context.currentMessage = undefined;
-      this.processingActors.delete(id);
+
+      processed++;
     }
 
     // Continue processing if more messages and actor is still alive.
-    // Use setImmediate for fairness — yields to event loop between messages.
+    // Yield to event loop after batch for fairness.
     if (
       this.actors.has(id) &&
       this.mailboxes.has(id) &&

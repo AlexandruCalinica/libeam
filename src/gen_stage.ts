@@ -237,23 +237,46 @@ class DemandDispatcher implements Dispatcher {
    * Returns events that could not be dispatched (no demand).
    */
   dispatch(events: any[]): DispatchResult {
-    const dispatched: Array<{ consumerRef: ActorRef; tag: string; events: any[] }> = [];
-    let remaining = [...events];
+    const dispatched: DispatchResult["dispatched"] = [];
+    let idx = 0;
+    const len = events.length;
 
-    // Sort subscribers by demand DESC — highest demand served first
-    const sorted = [...this.subscribers.entries()]
-      .filter(([, sub]) => sub.demand > 0)
-      .sort(([, a], [, b]) => b.demand - a.demand);
-
-    for (const [tag, sub] of sorted) {
-      if (remaining.length === 0) break;
-      const count = Math.min(sub.demand, remaining.length);
-      const batch = remaining.splice(0, count);
-      sub.demand -= count;
-      dispatched.push({ consumerRef: sub.consumerRef, tag, events: batch });
+    // Fast path: single subscriber (very common — P→C topology)
+    if (this.subscribers.size === 1) {
+      const [tag, sub] = this.subscribers.entries().next().value as [string, ProducerSub];
+      if (sub.demand > 0) {
+        const count = Math.min(sub.demand, len);
+        // Use subarray view instead of splice to avoid copying
+        const batch = count === len ? events : events.slice(0, count);
+        sub.demand -= count;
+        dispatched.push({ consumerRef: sub.consumerRef, tag, events: batch });
+        idx = count;
+      }
+      return { dispatched, remaining: idx >= len ? [] : events.slice(idx) };
     }
 
-    return { dispatched, remaining };
+    // Multi-subscriber: find highest-demand subscriber in a loop (avoid sort + entries copy)
+    // Repeat until events exhausted or no more demand.
+    while (idx < len) {
+      let bestTag: string | null = null;
+      let bestSub: ProducerSub | null = null;
+      let bestDemand = 0;
+      for (const [tag, sub] of this.subscribers) {
+        if (sub.demand > bestDemand) {
+          bestTag = tag;
+          bestSub = sub;
+          bestDemand = sub.demand;
+        }
+      }
+      if (!bestSub || bestDemand <= 0) break;
+      const count = Math.min(bestDemand, len - idx);
+      const batch = events.slice(idx, idx + count);
+      bestSub.demand -= count;
+      dispatched.push({ consumerRef: bestSub.consumerRef, tag: bestTag!, events: batch });
+      idx += count;
+    }
+
+    return { dispatched, remaining: idx >= len ? [] : events.slice(idx) };
   }
 
   hasSubscribers(): boolean {
@@ -306,8 +329,9 @@ class BroadcastDispatcher implements Dispatcher {
     }
 
     const count = Math.min(events.length, this.waiting);
-    const deliverNow = events.slice(0, count);
-    const deliverLater = events.slice(count);
+    // Avoid slicing when all events are dispatched (common fast path)
+    const deliverNow = count === events.length ? events : events.slice(0, count);
+    const deliverLater = count === events.length ? [] : events.slice(count);
     this.waiting -= count;
     this.requested -= count;
 
@@ -770,11 +794,18 @@ class ConsumerStageActor extends Actor {
 
   private askProducer(tag: string, sub: ConsumerSub, demand: number): void {
     sub.pendingDemand += demand;
-    sub.producerRef.cast({
-      __stage: "ask",
+    const msg = {
+      __stage: "ask" as const,
       tag,
       demand,
-    } satisfies StageCast);
+    } satisfies StageCast;
+    // Fast path: synchronous demand for local producers.
+    // Collapses demand→emit→process from 2+ event-loop ticks to 1 tight loop.
+    const pid = sub.producerRef.id;
+    if (!pid.name && pid.systemId === this.context.system.id) {
+      if (this.context.system._syncLocalCast(pid.id, msg)) return;
+    }
+    sub.producerRef.cast(msg);
   }
 }
 
@@ -963,11 +994,17 @@ class ConsumerSupervisorActor extends Actor {
 
   private askProducer(tag: string, sub: ConsumerSub, demand: number): void {
     sub.pendingDemand += demand;
-    sub.producerRef.cast({
-      __stage: "ask",
+    const msg = {
+      __stage: "ask" as const,
       tag,
       demand,
-    } satisfies StageCast);
+    } satisfies StageCast;
+    // Fast path: synchronous demand for local producers.
+    const pid = sub.producerRef.id;
+    if (!pid.name && pid.systemId === this.context.system.id) {
+      if (this.context.system._syncLocalCast(pid.id, msg)) return;
+    }
+    sub.producerRef.cast(msg);
   }
 
   private handleCancelFromProducer(tag: string, _reason: string): void {
@@ -1150,11 +1187,12 @@ class ProducerConsumerStageActor extends Actor {
     if (sub.pendingDemand <= sub.minDemand) {
       const askAmount = sub.maxDemand - sub.pendingDemand;
       sub.pendingDemand += askAmount;
-      sub.producerRef.cast({
-        __stage: "ask",
-        tag,
-        demand: askAmount,
-      } satisfies StageCast);
+      const msg = { __stage: "ask" as const, tag, demand: askAmount } satisfies StageCast;
+      const pid = sub.producerRef.id;
+      if (!pid.name && pid.systemId === this.context.system.id) {
+        if (this.context.system._syncLocalCast(pid.id, msg)) return;
+      }
+      sub.producerRef.cast(msg);
     }
   }
 

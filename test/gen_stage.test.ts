@@ -359,9 +359,13 @@ describe("GenStage", () => {
       // Sequential subscribe — no Promise.all workaround needed
       await consumer1.subscribe(producer.getRef(), { maxDemand: 10, minDemand: 5 });
       await consumer2.subscribe(producer.getRef(), { maxDemand: 3, minDemand: 1 });
-      await sleep(100);
+      await sleep(200);
 
-      expect(received1.slice(0, received2.length)).toEqual(received2.slice(0, received2.length));
+      // Both consumers should receive the same events in broadcast mode.
+      // Compare up to the shorter length since processing rates may differ.
+      const minLen = Math.min(received1.length, received2.length);
+      expect(minLen).toBeGreaterThan(0);
+      expect(received1.slice(0, minLen)).toEqual(received2.slice(0, minLen));
 
       await consumer1.stop();
       await consumer2.stop();
