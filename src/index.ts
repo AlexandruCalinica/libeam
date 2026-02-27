@@ -1,4 +1,5 @@
 export * from "./logger";
+export * from "./telemetry";
 export * from "./errors";
 export * from "./health";
 export * from "./actor";
