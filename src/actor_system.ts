@@ -58,6 +58,7 @@ import { BoundedMailbox, type MailboxConfig } from "./mailbox";
 import type { ActorDefinition } from "./types/functional";
 import { TypedActorRef } from "./types/functional";
 import { GroupMember, ProcessGroupManager } from "./process_group";
+import { telemetry, TelemetryEvents } from "./telemetry";
 
 export interface SpawnOptions {
   name?: string;
@@ -348,6 +349,8 @@ export class ActorSystem implements HealthCheckable {
 
     const { timeout = 5000, drainMailboxes = true } = options;
     this._isShuttingDown = true;
+    const shutdownStart = performance.now();
+    const shutdownActorCount = this.actors.size;
 
     // Stop heartbeat manager first to prevent false failure detection during shutdown
     await this.heartbeatManager.stop();
@@ -398,6 +401,14 @@ export class ActorSystem implements HealthCheckable {
     await Promise.all(stopPromises);
 
     this._isRunning = false;
+    telemetry.execute(
+      [...TelemetryEvents.system.shutdown, "stop"],
+      {
+        duration_ms: performance.now() - shutdownStart,
+        actor_count: shutdownActorCount,
+      },
+      { node_id: this.id },
+    );
   }
 
   async migrate(
@@ -749,18 +760,39 @@ export class ActorSystem implements HealthCheckable {
       this.mailboxes.set(instanceId, new BoundedMailbox(mailboxConfig));
       this.actorMetadata.set(instanceId, { actorClass, options });
 
+      telemetry.execute(TelemetryEvents.actor.spawn, {}, {
+        actor_id: instanceId,
+        actor_class: actorClass.name ?? actorClass.constructor?.name ?? "unknown",
+        name: name,
+        node_id: this.id,
+      });
+
       if (name) {
         this.registry.register(name, this.id, instanceId);
       }
 
+      const initMeta = {
+        actor_id: instanceId,
+        actor_class: actorClass.name ?? actorClass.constructor?.name ?? "unknown",
+      };
+      const initStart = performance.now();
       Promise.resolve(actor.init(...(args || [])))
         .then((result) => {
-          // Check if init returned a continue signal
+          telemetry.execute(
+            [...TelemetryEvents.actor.init, "stop"],
+            { duration_ms: performance.now() - initStart },
+            initMeta,
+          );
           if (isInitContinue(result)) {
             return Promise.resolve(actor.handleContinue(result.continue));
           }
         })
         .catch((err) => {
+          telemetry.execute(
+            [...TelemetryEvents.actor.init, "exception"],
+            { duration_ms: performance.now() - initStart },
+            { ...initMeta, error: err instanceof Error ? err.message : String(err) },
+          );
           this.supervisor.handleCrash(actorRef, err);
         });
 
@@ -851,18 +883,40 @@ export class ActorSystem implements HealthCheckable {
     parentActor.context.children.add(actorRef);
     parentActor.context.childOrder.push(actorRef);
 
+    telemetry.execute(TelemetryEvents.actor.spawn, {}, {
+      actor_id: instanceId,
+      actor_class: actorClass.name ?? actorClass.constructor?.name ?? "unknown",
+      name: name,
+      parent_id: parentId,
+      node_id: this.id,
+    });
+
     if (name) {
       this.registry.register(name, this.id, instanceId);
     }
 
+    const initMeta = {
+      actor_id: instanceId,
+      actor_class: actorClass.name ?? actorClass.constructor?.name ?? "unknown",
+    };
+    const initStart = performance.now();
     Promise.resolve(actor.init(...(args || [])))
       .then((result) => {
-        // Check if init returned a continue signal
+        telemetry.execute(
+          [...TelemetryEvents.actor.init, "stop"],
+          { duration_ms: performance.now() - initStart },
+          initMeta,
+        );
         if (isInitContinue(result)) {
           return Promise.resolve(actor.handleContinue(result.continue));
         }
       })
       .catch((err) => {
+        telemetry.execute(
+          [...TelemetryEvents.actor.init, "exception"],
+          { duration_ms: performance.now() - initStart },
+          { ...initMeta, error: err instanceof Error ? err.message : String(err) },
+        );
         this.supervisor.handleCrash(actorRef, err);
       });
 
@@ -2503,6 +2557,7 @@ export class ActorSystem implements HealthCheckable {
     const { id, name } = actorRef.id;
     const actor = this.actors.get(id);
     if (actor) {
+      const stopStart = performance.now();
       // Cascading termination: stop all children first (both local and remote)
       const children = Array.from(actor.context.children);
       for (const childRef of children) {
@@ -2562,6 +2617,16 @@ export class ActorSystem implements HealthCheckable {
         actorId: id,
         childrenStopped: children.length,
       });
+
+      telemetry.execute(
+        [...TelemetryEvents.actor.stop, "stop"],
+        { duration_ms: performance.now() - stopStart },
+        {
+          actor_id: id,
+          name: name,
+          children_stopped: children.length,
+        },
+      );
     }
   }
 
@@ -4241,6 +4306,12 @@ export class ActorSystem implements HealthCheckable {
 
     let processed = 0;
     const batchSize = ActorSystem.MAILBOX_BATCH_SIZE;
+    const hasCallTelemetry =
+      telemetry.hasHandlers([...TelemetryEvents.actor.handleCall, "stop"]) ||
+      telemetry.hasHandlers([...TelemetryEvents.actor.handleCall, "start"]);
+    const hasCastTelemetry =
+      telemetry.hasHandlers([...TelemetryEvents.actor.handleCast, "stop"]) ||
+      telemetry.hasHandlers([...TelemetryEvents.actor.handleCast, "start"]);
 
     while (
       processed < batchSize &&
@@ -4255,12 +4326,39 @@ export class ActorSystem implements HealthCheckable {
 
       try {
         if (stashedMessage.type === "cast") {
-          // Fast path: skip Promise.resolve for synchronous handlers
-          const result = actor.handleCast(stashedMessage.message);
-          if (result && typeof (result as any).then === "function") {
-            await result;
+          if (hasCastTelemetry) {
+            const castMeta = { actor_id: id };
+            telemetry.execute(
+              [...TelemetryEvents.actor.handleCast, "start"],
+              { system_time: Date.now() },
+              castMeta,
+            );
+            const castStart = performance.now();
+            const result = actor.handleCast(stashedMessage.message);
+            if (result && typeof (result as any).then === "function") {
+              await result;
+            }
+            telemetry.execute(
+              [...TelemetryEvents.actor.handleCast, "stop"],
+              { duration_ms: performance.now() - castStart },
+              castMeta,
+            );
+          } else {
+            const result = actor.handleCast(stashedMessage.message);
+            if (result && typeof (result as any).then === "function") {
+              await result;
+            }
           }
         } else if (stashedMessage.type === "call") {
+          const callMeta = hasCallTelemetry ? { actor_id: id } : undefined;
+          if (callMeta) {
+            telemetry.execute(
+              [...TelemetryEvents.actor.handleCall, "start"],
+              { system_time: Date.now() },
+              callMeta,
+            );
+          }
+          const callStart = hasCallTelemetry ? performance.now() : 0;
           try {
             let result = actor.handleCall(stashedMessage.message);
             if (result && typeof (result as any).then === "function") {
@@ -4270,7 +4368,21 @@ export class ActorSystem implements HealthCheckable {
             if (!wasStashed && stashedMessage.resolve) {
               stashedMessage.resolve(result);
             }
+            if (callMeta) {
+              telemetry.execute(
+                [...TelemetryEvents.actor.handleCall, "stop"],
+                { duration_ms: performance.now() - callStart },
+                callMeta,
+              );
+            }
           } catch (err) {
+            if (callMeta) {
+              telemetry.execute(
+                [...TelemetryEvents.actor.handleCall, "exception"],
+                { duration_ms: performance.now() - callStart },
+                { ...callMeta, error: err },
+              );
+            }
             const wasStashed = actor.context.stash.includes(stashedMessage);
             if (!wasStashed && stashedMessage.reject) {
               stashedMessage.reject(err);
@@ -4280,6 +4392,13 @@ export class ActorSystem implements HealthCheckable {
           }
         }
       } catch (err) {
+        if (hasCastTelemetry && stashedMessage.type === "cast") {
+          telemetry.execute(
+            [...TelemetryEvents.actor.handleCast, "exception"],
+            { duration_ms: 0 },
+            { actor_id: id, error: err },
+          );
+        }
         this.supervisor.handleCrash(actor.self, err);
         // After crash, stop processing this actor's batch
         actor.context.currentMessage = undefined;
