@@ -8,6 +8,7 @@ import {
 } from "./actor";
 import { ActorSystem } from "./actor_system";
 import { Logger, createLogger } from "./logger";
+import { telemetry, TelemetryEvents } from "./telemetry";
 
 interface RestartRecord {
   count: number;
@@ -75,9 +76,22 @@ export class ChildSupervisor {
       { childId, parentId: metadata.parent.id.id, strategy: options.strategy },
     );
 
+    telemetry.execute(TelemetryEvents.supervisor.crash, {}, {
+      actor_id: childId,
+      parent_id: metadata.parent.id.id,
+      error: error instanceof Error ? error.message : String(error),
+      strategy: options.strategy,
+    });
+
     // Check restart limits using stable key
     const restartKey = this.getRestartKey(childId, metadata.parent.id.id);
     if (!this.canRestart(restartKey, options)) {
+      telemetry.execute(TelemetryEvents.supervisor.maxRestarts, { count: options.maxRestarts }, {
+        actor_id: childId,
+        parent_id: metadata.parent.id.id,
+        max_restarts: options.maxRestarts,
+        period_ms: options.periodMs,
+      });
       this.log.warn("Child exceeded max restarts, stopping", {
         childId,
         maxRestarts: options.maxRestarts,
@@ -149,6 +163,13 @@ export class ChildSupervisor {
       this.log.info("Child restarted successfully", {
         oldId: childRef.id.id,
         newId: newRef.id.id,
+      });
+
+      telemetry.execute(TelemetryEvents.supervisor.restart, {}, {
+        actor_id: childRef.id.id,
+        new_actor_id: newRef.id.id,
+        parent_id: childRef.id.systemId,
+        strategy: "one-for-one",
       });
     } else {
       this.log.error("Failed to restart child", undefined, {
@@ -363,6 +384,13 @@ export class ChildSupervisor {
       this.log.info("Remote child restarted successfully", {
         oldId: remoteChild.childRef.id.id,
         newId: newRef.id.id,
+      });
+
+      telemetry.execute(TelemetryEvents.supervisor.restart, {}, {
+        actor_id: remoteChild.childRef.id.id,
+        new_actor_id: newRef.id.id,
+        parent_id: remoteChild.parentRef.id.id,
+        strategy: "one-for-one",
       });
     } else {
       this.log.error("Failed to restart remote child", undefined, {

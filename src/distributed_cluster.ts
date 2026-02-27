@@ -4,6 +4,7 @@ import { EventEmitter } from "events";
 import { GossipProtocol, PeerState } from "./gossip_protocol";
 import { Cluster } from "./cluster";
 import { HealthCheckable, ComponentHealth } from "./health";
+import { telemetry, TelemetryEvents } from "./telemetry";
 
 /**
  * A wrapper around the GossipProtocol that provides a cluster interface
@@ -24,9 +25,11 @@ export class DistributedCluster
     // Re-emit events from gossip protocol
     this.gossipProtocol.on("member_join", (peer: PeerState) => {
       this.emit("member_join", peer.id);
+      telemetry.execute(TelemetryEvents.cluster.join, {}, { peer_id: peer.id, node_id: this.nodeId });
     });
     this.gossipProtocol.on("member_leave", (peer: PeerState) => {
       this.emit("member_leave", peer.id);
+      telemetry.execute(TelemetryEvents.cluster.leave, {}, { peer_id: peer.id, node_id: this.nodeId });
     });
     this.gossipProtocol.on("member_update", (peer: PeerState) => {
       // Potentially emit member_update or just ignore if ActorSystem doesn't need it

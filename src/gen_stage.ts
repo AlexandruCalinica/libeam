@@ -24,6 +24,7 @@ import {
 import { ActorSystem, SpawnOptions } from "./actor_system";
 import { ChildCounts, ChildInfo } from "./dynamic_supervisor";
 import { createLogger, Logger } from "./logger";
+import { telemetry, TelemetryEvents } from "./telemetry";
 
 // ============ Configuration ============
 
@@ -563,6 +564,10 @@ class ProducerStageActor extends Actor {
       maxDemand: msg.maxDemand,
       minDemand: msg.minDemand,
     }, { partition: msg.partition });
+    telemetry.execute(TelemetryEvents.genStage.subscribe, {}, {
+      producer_id: this.self.id.id,
+      consumer_tag: msg.tag,
+    });
     this.log.debug("Consumer subscribed", { tag: msg.tag });
     return true;
   }
@@ -595,6 +600,11 @@ class ProducerStageActor extends Actor {
 
   private handleCancel(tag: string, reason: string): void {
     this.dispatcher.cancel(tag);
+    telemetry.execute(TelemetryEvents.genStage.cancel, {}, {
+      producer_id: this.self.id.id,
+      consumer_tag: tag,
+      reason,
+    });
     this.log.debug("Consumer cancelled", { tag, reason });
   }
 
@@ -617,6 +627,11 @@ class ProducerStageActor extends Actor {
     }
 
     const { dispatched, remaining } = this.dispatcher.dispatch(events);
+    if (events.length > 0) {
+      telemetry.execute(TelemetryEvents.genStage.dispatch, { event_count: events.length }, {
+        producer_id: this.self.id.id,
+      });
+    }
     this.sendDispatched(dispatched);
 
     if (remaining.length > 0) {
@@ -631,6 +646,9 @@ class ProducerStageActor extends Actor {
       if (this.buffer.length > this.bufferSize) {
         const overflow = this.buffer.length - this.bufferSize;
         this.buffer.splice(0, overflow);
+        telemetry.execute(TelemetryEvents.genStage.bufferOverflow, { dropped_count: overflow, buffer_size: this.bufferSize }, {
+          producer_id: this.self.id.id,
+        });
         this.log.warn("Producer buffer overflow, dropped oldest events", { dropped: overflow });
       }
     } else {
@@ -640,7 +658,11 @@ class ProducerStageActor extends Actor {
         this.buffer.push(...events.slice(0, space));
       }
       if (events.length > space) {
-        this.log.warn("Producer buffer overflow, dropped newest events", { dropped: events.length - Math.max(space, 0) });
+        const droppedCount = events.length - Math.max(space, 0);
+        telemetry.execute(TelemetryEvents.genStage.bufferOverflow, { dropped_count: droppedCount, buffer_size: this.bufferSize }, {
+          producer_id: this.self.id.id,
+        });
+        this.log.warn("Producer buffer overflow, dropped newest events", { dropped: droppedCount });
       }
     }
   }

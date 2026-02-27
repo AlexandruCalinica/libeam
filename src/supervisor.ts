@@ -3,6 +3,7 @@
 import { ActorRef, TerminationReason } from "./actor";
 import { ActorSystem } from "./actor_system";
 import { Logger, createLogger } from "./logger";
+import { telemetry, TelemetryEvents } from "./telemetry";
 
 export type SupervisionStrategy = "Restart" | "Stop";
 
@@ -65,6 +66,12 @@ export class Supervisor {
       { actorId },
     );
 
+    telemetry.execute(TelemetryEvents.supervisor.crash, {}, {
+      actor_id: actorId,
+      error: error instanceof Error ? error.message : String(error),
+      strategy: this.options.strategy,
+    });
+
     const now = Date.now();
     const record = this.restartCounts.get(actorId) || {
       count: 0,
@@ -78,6 +85,11 @@ export class Supervisor {
     }
 
     if (record.count >= this.options.maxRestarts) {
+      telemetry.execute(TelemetryEvents.supervisor.maxRestarts, { count: record.count }, {
+        actor_id: actorId,
+        max_restarts: this.options.maxRestarts,
+        period_ms: this.options.periodMs,
+      });
       this.log.warn("Actor exceeded max restarts, stopping", {
         actorId,
         maxRestarts: this.options.maxRestarts,
@@ -104,6 +116,13 @@ export class Supervisor {
               this.log.info("Actor restarted successfully", {
                 actorId,
                 newActorId: newRef.id.id,
+              });
+
+              telemetry.execute(TelemetryEvents.supervisor.restart, {}, {
+                actor_id: actorId,
+                new_actor_id: newRef.id.id,
+                attempt: record.count,
+                strategy: "Restart",
               });
             } else {
               this.log.error("Failed to restart actor", undefined, { actorId });
