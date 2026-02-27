@@ -1884,6 +1884,109 @@ log.info("Operation completed", { duration: 100 });
 log.error("Operation failed", error, { operationId: "123" });
 ```
 
+## Telemetry
+
+Libeam includes a lightweight telemetry/instrumentation system inspired by Elixir's [`:telemetry`](https://hexdocs.pm/telemetry) library. It provides synchronous event emission with zero overhead when no handlers are attached — safe for hot paths like message processing.
+
+### Basic Usage
+
+```typescript
+import { telemetry, TelemetryEvents } from "libeam";
+
+// Attach a handler to actor lifecycle events
+const handlerId = telemetry.attach("my-metrics", [
+  TelemetryEvents.actor.spawn,
+  [...TelemetryEvents.actor.stop, "stop"],
+], (eventName, measurements, metadata) => {
+  console.log(`Event: ${eventName.join(".")}`  , measurements, metadata);
+});
+
+// Detach when done
+telemetry.detach(handlerId);
+```
+
+### Span API
+
+Wrap a function in start/stop/exception telemetry events with automatic duration measurement:
+
+```typescript
+// Emits ["myapp", "db", "query", "start"] before, ["...", "stop"] after
+const result = telemetry.span(
+  ["myapp", "db", "query"],
+  { table: "users" },
+  () => db.query("SELECT * FROM users")
+);
+```
+
+### Event Catalog
+
+All events emitted by libeam:
+
+| Event | Measurements | Metadata |
+|-------|-------------|----------|
+| `libeam.actor.spawn` | — | `actor_id`, `actor_class`, `name`, `node_id`, `parent_id?` |
+| `libeam.actor.init.stop` | `duration_ms` | `actor_id`, `actor_class` |
+| `libeam.actor.init.exception` | `duration_ms` | `actor_id`, `actor_class`, `error` |
+| `libeam.actor.stop.stop` | `duration_ms` | `actor_id`, `name`, `children_stopped` |
+| `libeam.actor.handle_call.start` | `system_time` | `actor_id` |
+| `libeam.actor.handle_call.stop` | `duration_ms` | `actor_id` |
+| `libeam.actor.handle_call.exception` | `duration_ms` | `actor_id`, `error` |
+| `libeam.actor.handle_cast.start` | `system_time` | `actor_id` |
+| `libeam.actor.handle_cast.stop` | `duration_ms` | `actor_id` |
+| `libeam.actor.handle_cast.exception` | `duration_ms` | `actor_id`, `error` |
+| `libeam.supervisor.crash` | — | `actor_id`, `error`, `strategy` |
+| `libeam.supervisor.restart` | — | `actor_id`, `new_actor_id`, `attempt`, `strategy` |
+| `libeam.supervisor.max_restarts` | `count` | `actor_id`, `max_restarts`, `period_ms` |
+| `libeam.gen_stage.subscribe` | — | `producer_id`, `consumer_tag` |
+| `libeam.gen_stage.cancel` | — | `producer_id`, `consumer_tag`, `reason` |
+| `libeam.gen_stage.dispatch` | `event_count` | `producer_id` |
+| `libeam.gen_stage.buffer_overflow` | `dropped_count`, `buffer_size` | `producer_id` |
+| `libeam.cluster.join` | — | `peer_id`, `node_id` |
+| `libeam.cluster.leave` | — | `peer_id`, `node_id` |
+| `libeam.system.shutdown.stop` | `duration_ms`, `actor_count` | `node_id` |
+
+### Metrics Integration
+
+```typescript
+import { telemetry, TelemetryEvents } from "libeam";
+
+// Simple metrics collector
+const metrics = {
+  actorsSpawned: 0,
+  actorsStopped: 0,
+  callDurations: [] as number[],
+  crashes: 0,
+};
+
+telemetry.attach("prometheus", [
+  TelemetryEvents.actor.spawn,
+  [...TelemetryEvents.actor.stop, "stop"],
+  [...TelemetryEvents.actor.handleCall, "stop"],
+  TelemetryEvents.supervisor.crash,
+], (event, measurements) => {
+  const name = event.join(".");
+  if (name === "libeam.actor.spawn") metrics.actorsSpawned++;
+  if (name === "libeam.actor.stop.stop") metrics.actorsStopped++;
+  if (name === "libeam.actor.handle_call.stop") metrics.callDurations.push(measurements.duration_ms);
+  if (name === "libeam.supervisor.crash") metrics.crashes++;
+});
+```
+
+### Zero Overhead
+
+When no handlers are attached, telemetry calls are effectively free — a single Map lookup that returns immediately. Hot paths like message processing (`handleCall`/`handleCast`) additionally gate on `hasHandlers()`, ensuring zero object allocation overhead.
+
+### API
+
+| Method | Description |
+|--------|-------------|
+| `telemetry.attach(id, eventNames, handler)` | Attach handler to events. Returns handler id. |
+| `telemetry.detach(id)` | Remove handler. Returns true if found. |
+| `telemetry.execute(eventName, measurements, metadata)` | Emit event synchronously. No-op if no handlers. |
+| `telemetry.span(eventName, metadata, fn)` | Wrap function in start/stop/exception events. |
+| `telemetry.hasHandlers(eventName)` | Check if any handlers are attached. |
+| `telemetry.reset()` | Remove all handlers (test cleanup). |
+
 ## Error Handling
 
 Libeam provides typed error classes for better error handling:
