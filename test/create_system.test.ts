@@ -266,6 +266,39 @@ describe("createSystem", () => {
     });
   });
 
+  describe("stop", () => {
+    it("should stop an individual actor", async () => {
+      systemUnderTest = createSystem({ nodeId: "stop-test" });
+
+      const ref = systemUnderTest.spawn(LifecycleActor, { args: ["stop-target"] });
+      systemUnderTest.spawn(LifecycleActor, { args: ["survivor"] });
+
+      await systemUnderTest.stop(ref);
+
+      expect(LifecycleActor.terminated).toEqual(["stop-target"]);
+      // Survivor is still alive
+      expect(systemUnderTest.system.getLocalActorIds().length).toBe(1);
+    });
+
+    it("should cascade-terminate children when stopping a parent", async () => {
+      systemUnderTest = createSystem({ nodeId: "stop-cascade-test" });
+
+      // Spawn a parent, then use the low-level spawnChild to attach a child
+      const parent = systemUnderTest.spawn(LifecycleActor, { args: ["parent"] });
+      systemUnderTest.system.spawnChild(parent, LifecycleActor, {
+        args: ["child"],
+      });
+
+      expect(systemUnderTest.system.getLocalActorIds().length).toBe(2);
+
+      await systemUnderTest.stop(parent);
+
+      expect(LifecycleActor.terminated).toContain("parent");
+      expect(LifecycleActor.terminated).toContain("child");
+      expect(systemUnderTest.system.getLocalActorIds().length).toBe(0);
+    });
+  });
+
   describe("nodeId accessibility", () => {
     it("should expose nodeId at top level", () => {
       systemUnderTest = createSystem({ nodeId: "accessible-node" });

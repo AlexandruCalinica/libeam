@@ -356,7 +356,7 @@ async function main() {
     console.log("Crash handled by supervisor");
 
     // 5. Stop an actor (triggers libeam.actor.stop → counter metric)
-    await system.system.stop(counter);
+    await system.stop(counter);
   } finally {
     await system.shutdown();
     bridge.uninstall();

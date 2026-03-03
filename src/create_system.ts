@@ -130,6 +130,8 @@ export interface System {
   waitForCluster(options?: WaitForClusterOptions): Promise<void>;
   /** Gracefully shut down the system */
   shutdown(): Promise<void>;
+  /** Stop a specific actor (cascading termination of children) */
+  stop(ref: ActorRef): Promise<void>;
   /** Add an actor to a named process group */
   joinGroup(group: string, ref: ActorRef): void;
   /** Remove an actor from a named process group */
@@ -233,6 +235,10 @@ class SystemImpl implements System {
 
     // 4. Disconnect registry
     await this.registry.disconnect();
+  }
+
+  async stop(ref: ActorRef): Promise<void> {
+    await this.system.stop(ref);
   }
 
   joinGroup(group: string, ref: ActorRef): void {

@@ -94,17 +94,17 @@ async function main() {
     console.log(`\n  Watching ${watchCount} actors\n`);
 
     console.log("  Stopping Worker-A...");
-    await system.system.stop(w1);
+    await system.stop(w1);
     await sleep(100);
 
     console.log("  Stopping Worker-B...");
-    await system.system.stop(w2);
+    await system.stop(w2);
     await sleep(100);
 
     monitor.cast("unwatch", w3);
     await sleep(50);
     console.log("  Stopping Worker-C (unwatched)...");
-    await system.system.stop(w3);
+    await system.stop(w3);
     await sleep(100);
 
     const log = await monitor.call("getLog");
@@ -128,7 +128,7 @@ async function main() {
     console.log(`  Services: ${JSON.stringify(services)}`);
 
     console.log("  Stopping database service...");
-    await system.system.stop(svc2);
+    await system.stop(svc2);
     await sleep(100);
 
     services = await registry.call("list");

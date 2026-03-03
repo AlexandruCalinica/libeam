@@ -107,7 +107,7 @@ async function main() {
 
     const linked = await c2.call("getLinked");
     console.log(`  Coordinator alive! Linked: ${JSON.stringify(linked)}\n`);
-    await system.system.stop(c2);
+    await system.stop(c2);
 
     console.log("--- Demo 3: trapExit ---\n");
     const sup = system.spawn(Supervisor, { args: ["S1"] });

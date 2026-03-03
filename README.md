@@ -382,6 +382,7 @@ const system = await createSystem({
 - `register(actorClass)`: Register an actor class for remote spawning
 - `getActorByName(name)`: Look up a named actor (local or remote)
 - `shutdown()`: Gracefully shut down the system and all actors
+- `stop(ref)`: Stop an individual actor (cascading termination of children)
 - `nodeId`: The unique ID of this node
 - `transport`: Access to the underlying transport layer
 - `cluster`: Access to the cluster membership interface
