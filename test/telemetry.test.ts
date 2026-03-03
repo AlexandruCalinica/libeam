@@ -679,6 +679,166 @@ describe("telemetry", () => {
     });
   });
 
+  describe("_syncLocalCast telemetry", () => {
+    let system: ActorSystem;
+
+    beforeEach(async () => {
+      telemetry.reset();
+      const cluster = new MockCluster("test-node");
+      const transport = new InMemoryTransport(cluster.nodeId);
+      const registry = new LocalRegistry();
+      system = new ActorSystem(cluster, transport, registry);
+      await system.start();
+    });
+
+    afterEach(async () => {
+      telemetry.reset();
+      await system.shutdown();
+    });
+
+    it("emits handleCast start and stop for sync processing", () => {
+      const collector = createCollector();
+      telemetry.attach(
+        "test-sync-cast",
+        [
+          [...TelemetryEvents.actor.handleCast, "start"],
+          [...TelemetryEvents.actor.handleCast, "stop"],
+        ],
+        collector.handler,
+      );
+
+      const ref = system.spawn(TestActor);
+      const processed = system._syncLocalCast(ref.id.id, "inc");
+
+      expect(processed).toBe(true);
+      expect(collector.events).toHaveLength(2);
+      expect(collector.events.map((e) => e.name)).toContainEqual([
+        ...TelemetryEvents.actor.handleCast,
+        "start",
+      ]);
+      expect(collector.events.map((e) => e.name)).toContainEqual([
+        ...TelemetryEvents.actor.handleCast,
+        "stop",
+      ]);
+      const stopEvent = collector.events.find(
+        (e) => eventKey(e.name) === eventKey([...TelemetryEvents.actor.handleCast, "stop"]),
+      );
+      expect(stopEvent?.measurements.duration_ms).toBeGreaterThanOrEqual(0);
+      expect(stopEvent?.metadata.actor_id).toBe(ref.id.id);
+    });
+
+    it("emits handleCast exception on crash", () => {
+      const collector = createCollector();
+      telemetry.attach(
+        "test-sync-crash",
+        [
+          [...TelemetryEvents.actor.handleCast, "start"],
+          [...TelemetryEvents.actor.handleCast, "exception"],
+        ],
+        collector.handler,
+      );
+
+      const ref = system.spawn(ThrowingActor);
+      const processed = system._syncLocalCast(ref.id.id, "throw");
+
+      expect(processed).toBe(true); // crash was handled
+      const exception = collector.events.find(
+        (e) => eventKey(e.name) === eventKey([...TelemetryEvents.actor.handleCast, "exception"]),
+      );
+      expect(exception).toBeDefined();
+      expect(exception?.metadata.actor_id).toBe(ref.id.id);
+      expect(exception?.metadata.error).toBeInstanceOf(Error);
+    });
+
+    it("does not emit telemetry when no handlers attached", () => {
+      const ref = system.spawn(TestActor);
+      const processed = system._syncLocalCast(ref.id.id, "inc");
+
+      expect(processed).toBe(true);
+      // No handler attached — zero-overhead path
+      expect(telemetry.listHandlers()).toEqual([]);
+    });
+  });
+
+  describe("mailbox overflow telemetry", () => {
+    let system: ActorSystem;
+
+    beforeEach(async () => {
+      telemetry.reset();
+      const cluster = new MockCluster("test-node");
+      const transport = new InMemoryTransport(cluster.nodeId);
+      const registry = new LocalRegistry();
+      system = new ActorSystem(cluster, transport, registry);
+      await system.start();
+    });
+
+    afterEach(async () => {
+      telemetry.reset();
+      await system.shutdown();
+    });
+
+    it("emits mailbox.overflow on cast when mailbox is full", async () => {
+      const collector = createCollector();
+      telemetry.attach(
+        "test-overflow",
+        [TelemetryEvents.mailbox.overflow],
+        collector.handler,
+      );
+
+      const ref = system.spawn(TestActor, {
+        mailbox: { maxSize: 1, overflowStrategy: "error" },
+      });
+
+      // Pause mailbox so messages queue up
+      system.pauseMailbox(ref.id.id);
+
+      // First cast fills the mailbox
+      ref.cast("inc");
+      await wait(10);
+
+      // Second cast overflows
+      ref.cast("inc");
+      await wait(10);
+
+      const overflow = collector.events.find(
+        (e) => eventKey(e.name) === eventKey(TelemetryEvents.mailbox.overflow),
+      );
+      expect(overflow).toBeDefined();
+      expect(overflow?.metadata.actor_id).toBe(ref.id.id);
+      expect(overflow?.metadata.message_type).toBe("cast");
+    });
+
+    it("emits mailbox.overflow on call when mailbox is full", async () => {
+      const collector = createCollector();
+      telemetry.attach(
+        "test-overflow-call",
+        [TelemetryEvents.mailbox.overflow],
+        collector.handler,
+      );
+
+      const ref = system.spawn(TestActor, {
+        mailbox: { maxSize: 1, overflowStrategy: "drop-newest" },
+      });
+
+      // Pause mailbox so messages queue up
+      system.pauseMailbox(ref.id.id);
+
+      // Fill the mailbox
+      ref.cast("inc");
+      await wait(10);
+
+      // Call should overflow and emit telemetry
+      await expect(ref.call("hello", 100)).rejects.toThrow();
+
+      const overflow = collector.events.find(
+        (e) => eventKey(e.name) === eventKey(TelemetryEvents.mailbox.overflow),
+      );
+      expect(overflow).toBeDefined();
+      expect(overflow?.metadata.actor_id).toBe(ref.id.id);
+      expect(overflow?.metadata.message_type).toBe("call");
+    });
+  });
+
   describe("handler error isolation", () => {
     let system: ActorSystem;
 

@@ -1941,6 +1941,7 @@ All events emitted by libeam:
 | `libeam.gen_stage.cancel` | — | `producer_id`, `consumer_tag`, `reason` |
 | `libeam.gen_stage.dispatch` | `event_count` | `producer_id` |
 | `libeam.gen_stage.buffer_overflow` | `dropped_count`, `buffer_size` | `producer_id` |
+| `libeam.mailbox.overflow` | — | `actor_id`, `message_type` |
 | `libeam.cluster.join` | — | `peer_id`, `node_id` |
 | `libeam.cluster.leave` | — | `peer_id`, `node_id` |
 | `libeam.system.shutdown.stop` | `duration_ms`, `actor_count` | `node_id` |

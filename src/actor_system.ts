@@ -2779,6 +2779,7 @@ export class ActorSystem implements HealthCheckable {
           const enqueued = mailbox.enqueue(stashedMessage);
           if (!enqueued) {
             clearTimeout(timer);
+            telemetry.execute(TelemetryEvents.mailbox.overflow, {}, { actor_id: id, message_type: "call" });
             reject(new MailboxFullError());
           } else {
             this.scheduleProcessMailbox(id);
@@ -2807,6 +2808,7 @@ export class ActorSystem implements HealthCheckable {
           this.scheduleProcessMailbox(id);
         } catch (err) {
           if (!(err instanceof MailboxFullError)) throw err;
+          telemetry.execute(TelemetryEvents.mailbox.overflow, {}, { actor_id: id, message_type: "cast" });
         }
       }
       return;
@@ -2839,6 +2841,7 @@ export class ActorSystem implements HealthCheckable {
           if (!(err instanceof MailboxFullError)) {
             throw err;
           }
+          telemetry.execute(TelemetryEvents.mailbox.overflow, {}, { actor_id: id, message_type: "cast" });
         }
       }
     } else {
@@ -2877,18 +2880,54 @@ export class ActorSystem implements HealthCheckable {
     this._resetIdleTimeout(actorId, actor);
     this.processingActors.add(actorId);
 
+    // Hot-path gating: check once (matches processMailbox pattern)
+    const hasCastTelemetry =
+      telemetry.hasHandlers([...TelemetryEvents.actor.handleCast, "stop"]) ||
+      telemetry.hasHandlers([...TelemetryEvents.actor.handleCast, "start"]);
+
     try {
-      const result = actor.handleCast(message);
-      // If handler returns a Promise, we can't process synchronously.
-      // Enqueue normally and let processMailbox handle it.
-      if (result && typeof (result as any).then === "function") {
-        // Restore state — message was not fully processed
-        actor.context.currentMessage = prevMessage;
-        this.processingActors.delete(actorId);
-        return false;
+      if (hasCastTelemetry) {
+        const castMeta = { actor_id: actorId };
+        telemetry.execute(
+          [...TelemetryEvents.actor.handleCast, "start"],
+          { system_time: Date.now() },
+          castMeta,
+        );
+        const castStart = performance.now();
+        const result = actor.handleCast(message);
+        // If handler returns a Promise, we can't process synchronously.
+        // Enqueue normally and let processMailbox handle it.
+        if (result && typeof (result as any).then === "function") {
+          // Restore state — message was not fully processed
+          actor.context.currentMessage = prevMessage;
+          this.processingActors.delete(actorId);
+          return false;
+        }
+        telemetry.execute(
+          [...TelemetryEvents.actor.handleCast, "stop"],
+          { duration_ms: performance.now() - castStart },
+          castMeta,
+        );
+      } else {
+        const result = actor.handleCast(message);
+        // If handler returns a Promise, we can't process synchronously.
+        // Enqueue normally and let processMailbox handle it.
+        if (result && typeof (result as any).then === "function") {
+          // Restore state — message was not fully processed
+          actor.context.currentMessage = prevMessage;
+          this.processingActors.delete(actorId);
+          return false;
+        }
       }
       return true;
     } catch (err) {
+      if (hasCastTelemetry) {
+        telemetry.execute(
+          [...TelemetryEvents.actor.handleCast, "exception"],
+          { duration_ms: 0 },
+          { actor_id: actorId, error: err },
+        );
+      }
       this.supervisor.handleCrash(actor.self, err);
       return true; // Crash was handled
     } finally {

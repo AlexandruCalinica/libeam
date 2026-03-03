@@ -220,3 +220,4 @@ main().catch(console.error);
 | `high-level/message_stashing.ts` | Intermediate | Message stashing with functional API |
 | `high-level/distributed.ts` | Advanced | Distributed actors via createSystem() |
 | `high-level/gen_stage.ts` | Intermediate | GenStage pipeline with dispatchers and ConsumerSupervisor worker spawning |
+| `high-level/opentelemetry_bridge.ts` | Intermediate | Bridging libeam telemetry to OpenTelemetry spans and metrics |
