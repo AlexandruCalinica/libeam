@@ -148,17 +148,24 @@ export class ZeroMQTransport implements Transport {
     }
     this.pendingRequests.clear();
 
+    // Set linger to 0 so sockets close immediately without waiting
+    // for pending messages. This is critical for test cleanup to avoid
+    // port contention between sequential cluster instances.
     if (this.rpcSocket) {
+      this.rpcSocket.linger = 0;
       this.rpcSocket.close();
     }
     if (this.pubSocket) {
+      this.pubSocket.linger = 0;
       this.pubSocket.close();
     }
     if (this.subSocket) {
+      this.subSocket.linger = 0;
       this.subSocket.close();
     }
 
     for (const connection of this.dealerConnections.values()) {
+      connection.dealer.linger = 0;
       connection.dealer.close();
     }
     this.dealerConnections.clear();

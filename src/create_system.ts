@@ -187,6 +187,8 @@ class SystemImpl implements System {
     readonly registry: Registry,
     private readonly clusterLeave?: () => Promise<void>,
     keyring?: Keyring,
+    /** @internal Exposed for test infrastructure (node_worker resync) */
+    readonly registrySync?: RegistrySync,
   ) {
     this.nodeId = system.id;
     this.keyring = keyring;
@@ -371,8 +373,9 @@ async function createDistributedSystem(config: DistributedConfig): Promise<Syste
     seedNodes: config.seedNodes,
   };
 
-  const rpcAddress = `tcp://127.0.0.1:${rpcPort}`;
-  const gossipAddress = `127.0.0.1:${gossipPort}`;
+  const advertiseAddr = config.advertiseAddress ?? "127.0.0.1";
+  const rpcAddress = `tcp://${advertiseAddr}:${rpcPort}`;
+  const gossipAddress = `${advertiseAddr}:${gossipPort}`;
 
   const gossipProtocol = new GossipProtocol(
     nodeId,
@@ -386,21 +389,23 @@ async function createDistributedSystem(config: DistributedConfig): Promise<Syste
 
   // 3. Setup cluster (wraps gossip protocol)
   const cluster = new DistributedCluster(gossipProtocol);
-  await cluster.start();
 
-  // 4. Setup registry sync for actor name resolution
-  const registrySync = new RegistrySync(nodeId, transport, cluster);
-  const registry = new DistributedRegistry(nodeId, registrySync);
-
-  await registry.connect();
-
-  // 5. Wire cluster membership changes to transport
+  // 4. Wire cluster membership changes to transport BEFORE starting cluster
+  // so that no member_join events are missed during gossip convergence.
   cluster.on("member_join", (peerId: string) => {
     const peer = cluster.getPeerState(peerId);
     if (peer && peer.address) {
       transport.updatePeers([[peerId, peer.address]]);
     }
   });
+
+  await cluster.start();
+
+  // 5. Setup registry sync for actor name resolution
+  const registrySync = new RegistrySync(nodeId, transport, cluster);
+  const registry = new DistributedRegistry(nodeId, registrySync);
+
+  await registry.connect();
 
   // 6. Create actor system
   const processGroups = new ProcessGroupManager(nodeId, transport, cluster);
@@ -423,7 +428,7 @@ async function createDistributedSystem(config: DistributedConfig): Promise<Syste
   };
 
   const keyring = keyringAuth ? new KeyringImpl(keyringAuth, transport) : undefined;
-  const systemImpl = new SystemImpl(system, transport, cluster, registry, clusterLeave, keyring);
+  const systemImpl = new SystemImpl(system, transport, cluster, registry, clusterLeave, keyring, registrySync);
 
   if (config.ready) {
     try {

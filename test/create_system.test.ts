@@ -10,6 +10,7 @@ import {
   LocalCluster,
   LocalConfig,
   DistributedConfig,
+  DistributedCluster,
 } from "../src";
 
 class TestActor extends Actor {
@@ -384,6 +385,48 @@ describe("createSystem", () => {
       expect(explicitPorts.rpc).toBe(6000);
       expect(explicitPorts.pub).toBe(6100);
       expect(explicitPorts.gossip).toBe(6200);
+    });
+  });
+
+  describe("advertiseAddress", () => {
+    let sys: System | undefined;
+
+    afterEach(async () => {
+      if (sys) {
+        await sys.shutdown();
+        sys = undefined;
+      }
+    });
+
+    it("should propagate advertiseAddress to gossip PeerState", async () => {
+      sys = await createSystem({
+        type: "distributed",
+        port: 19500,
+        seedNodes: [],
+        advertiseAddress: "10.0.1.42",
+      });
+
+      const cluster = sys.cluster as DistributedCluster;
+      const selfState = cluster.getPeerState(sys.nodeId);
+
+      expect(selfState).toBeDefined();
+      expect(selfState!.address).toBe("tcp://10.0.1.42:19500");
+      expect(selfState!.gossipAddress).toBe("10.0.1.42:19502");
+    });
+
+    it("should default to 127.0.0.1 when advertiseAddress is not set", async () => {
+      sys = await createSystem({
+        type: "distributed",
+        port: 19510,
+        seedNodes: [],
+      });
+
+      const cluster = sys.cluster as DistributedCluster;
+      const selfState = cluster.getPeerState(sys.nodeId);
+
+      expect(selfState).toBeDefined();
+      expect(selfState!.address).toBe("tcp://127.0.0.1:19510");
+      expect(selfState!.gossipAddress).toBe("127.0.0.1:19512");
     });
   });
 });

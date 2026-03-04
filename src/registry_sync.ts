@@ -97,6 +97,20 @@ export class RegistrySync extends EventEmitter implements Registry {
   }
 
   /**
+   * Re-publish all local registrations to PUB/SUB.
+   * Used for anti-entropy when SUB connections may have been
+   * established after the original registration was published.
+   */
+  republishAll(): void {
+    for (const reg of this.registrations.values()) {
+      this.transport.publish("registry:updates", {
+        type: "register",
+        registration: this.serializeRegistration(reg),
+      });
+    }
+  }
+
+  /**
    * Unregisters an actor name from the registry.
    * @param name The name of the actor to unregister
    */
@@ -232,14 +246,13 @@ export class RegistrySync extends EventEmitter implements Registry {
   private handlePeerJoin(nodeId: string): void {
     this.syncPeers();
 
-    // Anti-entropy: send full state to new peer
-    // The new peer will merge with its own state
-    for (const reg of this.registrations.values()) {
-      this.transport.publish("registry:updates", {
-        type: "register",
-        registration: this.serializeRegistration(reg),
-      });
-    }
+    // Anti-entropy: send full state to new peer.
+    // Published immediately and after delays because ZeroMQ SUB connections
+    // are asynchronous — the TCP handshake may not be complete when
+    // syncPeers() returns, so initial publishes can be lost.
+    this.republishAll();
+    setTimeout(() => this.republishAll(), 500);
+    setTimeout(() => this.republishAll(), 2000);
   }
 
    private syncPeers(): void {

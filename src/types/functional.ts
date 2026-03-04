@@ -87,6 +87,8 @@ export interface DistributedConfig {
   port?: number;
   ports?: { rpc: number; pub: number; gossip: number };
   bindAddress?: string;
+  /** Address to advertise to peers for RPC/gossip connections. Use when the bind address (0.0.0.0) differs from the reachable address (e.g., public IP). Default: "127.0.0.1" */
+  advertiseAddress?: string;
   seedNodes: string[];
   gossip?: GossipConfig;
   supervision?: SupervisionConfig;
