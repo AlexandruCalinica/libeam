@@ -29,6 +29,9 @@ export * from "./process_group";
 export * from "./mailbox";
 export * from "./dynamic_supervisor";
 export * from "./gen_stage";
+export * from "./orchestration/node_agent";
+export * from "./orchestration/node_worker";
+export * from "./testing";
 export { AuthenticationError } from "./errors";
 export { AuthenticatedGossipMessage } from "./gossip";
 export {

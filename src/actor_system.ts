@@ -688,6 +688,14 @@ export class ActorSystem implements HealthCheckable {
   }
 
   /**
+   * Resolves a registered actor class by name.
+   * Returns undefined if no class is registered with that name.
+   */
+  getActorClass(className: string): (new () => Actor) | undefined {
+    return this.actorClasses.get(className);
+  }
+
+  /**
    * Spawns an actor and returns a reference to it.
    * Returns a typed ActorRef when spawning a typed actor class.
    *
