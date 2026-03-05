@@ -350,16 +350,21 @@ export class TestCluster {
     // After cluster formation, SUB sockets are connected but workers
     // may have published their registry entries before the SUB handshake
     // completed. Tell all workers to re-publish their registry entries.
-    for (const child of childProcesses) {
-      if (child.connected) {
-        child.send({ type: "resync-registry" });
+    const triggerResync = () => {
+      for (const child of childProcesses) {
+        if (child.connected) {
+          child.send({ type: "resync-registry" });
+        }
       }
-    }
+    };
+    triggerResync();
 
     // Give SUB sockets time to receive the re-published entries
     await new Promise((r) => setTimeout(r, 500));
 
-    // Resolve NodeAgent refs for each worker
+    // Resolve NodeAgent refs for each worker.
+    // Pass the resync callback so retryGetActor can periodically
+    // re-trigger registry publishing if PUB/SUB messages were lost.
     for (let i = 0; i < size; i++) {
       const nodeId = `${uniquePrefix}-${i}`;
       const ports = workerPortSets[i];
@@ -370,6 +375,7 @@ export class TestCluster {
         controllerSystem,
         `node-agent@${nodeId}`,
         timeout,
+        triggerResync,
       );
 
       nodeHandles.push(createNodeHandle(
@@ -590,18 +596,36 @@ function createNodeHandle(
 /**
  * Retry getActorByName with exponential backoff.
  * Registry sync across nodes can take a few hundred ms after gossip converges.
+ *
+ * Periodically triggers onResync callback to re-publish registry entries
+ * via PUB/SUB, handling the case where initial publishes were lost because
+ * SUB socket TCP handshakes had not yet completed.
  */
 async function retryGetActor(
   system: System,
   name: string,
   timeout: number,
+  onResync?: () => void,
 ): Promise<ActorRef> {
   const start = Date.now();
   let delay = 100;
+  let attempts = 0;
+  // Track when we last triggered a resync to avoid flooding
+  let lastResyncAt = start;
 
   while (Date.now() - start < timeout) {
     const ref = await system.getActorByName(name);
     if (ref) return ref;
+
+    attempts++;
+    // Re-trigger registry sync every 3 seconds during retries.
+    // PUB/SUB messages can be lost if SUB sockets haven't fully connected
+    // yet — periodic resync gives multiple chances for delivery.
+    if (onResync && Date.now() - lastResyncAt >= 3000) {
+      onResync();
+      lastResyncAt = Date.now();
+    }
+
     await new Promise((r) => setTimeout(r, delay));
     delay = Math.min(delay * 1.5, 2000);
   }
