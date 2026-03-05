@@ -352,20 +352,30 @@ async function createDistributedSystem(config: DistributedConfig): Promise<Syste
     }
   }
 
-  const transport = new ZeroMQTransport({
+  const zmqTransport = new ZeroMQTransport({
     nodeId,
     rpcPort,
     pubPort,
     bindAddress,
     curveKeyPair: curveKeyPair ?? undefined,
   });
-  await transport.connect();
+  await zmqTransport.connect();
 
-  const gossipUDP = new GossipUDP({
+  // Apply optional transport wrapper (used by fault injection in testing)
+  const transport: Transport = config._wrapTransport
+    ? config._wrapTransport(zmqTransport)
+    : zmqTransport;
+
+  const rawGossipUDP = new GossipUDP({
     address: bindAddress,
     port: gossipPort,
     auth: gossipAuth ?? undefined,
   });
+
+  // Apply optional gossip wrapper (used by fault injection in testing)
+  const gossipUDP = config._wrapGossipUDP
+    ? config._wrapGossipUDP(rawGossipUDP)
+    : rawGossipUDP;
 
   const gossipOptions: GossipOptions = {
     ...DEFAULT_GOSSIP_OPTIONS,
@@ -427,7 +437,7 @@ async function createDistributedSystem(config: DistributedConfig): Promise<Syste
     await cluster.leave();
   };
 
-  const keyring = keyringAuth ? new KeyringImpl(keyringAuth, transport) : undefined;
+  const keyring = keyringAuth ? new KeyringImpl(keyringAuth, zmqTransport) : undefined;
   const systemImpl = new SystemImpl(system, transport, cluster, registry, clusterLeave, keyring, registrySync);
 
   if (config.ready) {

@@ -109,6 +109,10 @@ export interface DistributedConfig {
   mailbox?: MailboxConfig;
   /** Configurable timeouts for actor operations */
   timeouts?: SystemTimeouts;
+  /** @internal Transport wrapper factory for testing (fault injection). Not part of public API. */
+  _wrapTransport?: (transport: import("../transport").Transport) => import("../transport").Transport;
+  /** @internal GossipUDP wrapper factory for testing (fault injection). Not part of public API. */
+  _wrapGossipUDP?: (gossip: import("../gossip_udp").GossipUDP) => any;
 }
 
 

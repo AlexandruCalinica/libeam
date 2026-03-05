@@ -11,6 +11,8 @@ import { createSystem } from "../create_system";
 import { NodeAgent } from "./node_agent";
 import type { System } from "../create_system";
 import type { ActorDefinition } from "../types/functional";
+import type { FaultyTransport } from "../testing/faulty_transport";
+import type { FaultyGossipUDP } from "../testing/faulty_gossip";
 
 /** Message sent from TestCluster to NodeWorker via IPC */
 export interface NodeWorkerBootMessage {
@@ -22,6 +24,8 @@ export interface NodeWorkerBootMessage {
     cookie?: string;
     advertiseAddress?: string;
     actorModules?: string[];
+    /** Enable fault injection wrappers (FaultyTransport + FaultyGossipUDP) */
+    faultInjection?: boolean;
   };
 }
 
@@ -47,10 +51,30 @@ export interface NodeWorkerResyncRegistryMessage {
   type: "resync-registry";
 }
 
+/** Request from TestCluster to partition this node from specified peers */
+export interface NodeWorkerPartitionMessage {
+  type: "partition";
+  /** NodeIDs to partition from */
+  targetNodeIds: string[];
+  /** Gossip addresses to block (e.g., ["127.0.0.1:5002"]) */
+  targetGossipAddresses: string[];
+}
+
+/** Request from TestCluster to heal partitions */
+export interface NodeWorkerHealMessage {
+  type: "heal";
+  /** NodeIDs to heal (empty = heal all) */
+  targetNodeIds: string[];
+  /** Gossip addresses to unblock */
+  targetGossipAddresses: string[];
+}
+
 export type NodeWorkerMessage =
   | NodeWorkerBootMessage
   | NodeWorkerShutdownMessage
-  | NodeWorkerResyncRegistryMessage;
+  | NodeWorkerResyncRegistryMessage
+  | NodeWorkerPartitionMessage
+  | NodeWorkerHealMessage;
 
 export type NodeWorkerResponse =
   | NodeWorkerReadyMessage
@@ -59,18 +83,38 @@ export type NodeWorkerResponse =
 // Only activate IPC listener when running as a forked child process
 if (process.send) {
   let system: System | undefined;
+  let faultyTransport: FaultyTransport | undefined;
+  let faultyGossip: FaultyGossipUDP | undefined;
 
   process.on("message", async (msg: NodeWorkerMessage) => {
     if (msg.type === "boot") {
       try {
-        system = await createSystem({
+        // Build createSystem config with optional fault injection wrappers
+        const createSystemConfig: any = {
           type: "distributed",
           nodeId: msg.config.nodeId,
           port: msg.config.port,
           seedNodes: msg.config.seedNodes,
           cookie: msg.config.cookie,
           advertiseAddress: msg.config.advertiseAddress ?? "127.0.0.1",
-        });
+        };
+
+        if (msg.config.faultInjection) {
+          // Lazy-import to avoid loading testing modules in non-fault-injection workers
+          const { FaultyTransport: FT } = require("../testing/faulty_transport");
+          const { FaultyGossipUDP: FG } = require("../testing/faulty_gossip");
+
+          createSystemConfig._wrapTransport = (inner: any) => {
+            faultyTransport = new FT(inner);
+            return faultyTransport;
+          };
+          createSystemConfig._wrapGossipUDP = (inner: any) => {
+            faultyGossip = new FG(inner);
+            return faultyGossip;
+          };
+        }
+
+        system = await createSystem(createSystemConfig);
 
         // Spawn NodeAgent with well-known name
         const agentRef = system.spawn(NodeAgent, {
@@ -118,6 +162,46 @@ if (process.send) {
         const registrySync = (system as any).registrySync;
         if (registrySync && typeof registrySync.republishAll === "function") {
           registrySync.republishAll();
+        }
+      }
+    }
+
+    if (msg.type === "partition") {
+      if (faultyTransport) {
+        for (const nodeId of msg.targetNodeIds) {
+          faultyTransport.partition(nodeId);
+        }
+      }
+      if (faultyGossip) {
+        for (let i = 0; i < msg.targetNodeIds.length; i++) {
+          const nodeId = msg.targetNodeIds[i];
+          const gossipAddr = msg.targetGossipAddresses[i];
+          if (nodeId && gossipAddr) {
+            faultyGossip.partition(nodeId, gossipAddr);
+          }
+        }
+      }
+    }
+
+    if (msg.type === "heal") {
+      if (msg.targetNodeIds.length === 0) {
+        // Heal all
+        if (faultyTransport) faultyTransport.healAll();
+        if (faultyGossip) faultyGossip.healAll();
+      } else {
+        if (faultyTransport) {
+          for (const nodeId of msg.targetNodeIds) {
+            faultyTransport.heal(nodeId);
+          }
+        }
+        if (faultyGossip) {
+          for (let i = 0; i < msg.targetNodeIds.length; i++) {
+            const nodeId = msg.targetNodeIds[i];
+            const gossipAddr = msg.targetGossipAddresses[i];
+            if (nodeId && gossipAddr) {
+              faultyGossip.heal(nodeId, gossipAddr);
+            }
+          }
         }
       }
     }
