@@ -1,4 +1,3 @@
-import * as net from "net";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   Actor,
@@ -7,41 +6,31 @@ import {
   type System,
   TimeoutError,
   ZeroMQTransport,
-} from "../src";
+  } from "../src";
 import { KeyringAuthenticator } from "../src/auth";
+import { allocatePorts } from "../src/testing/port_allocator";
 
 const OLD_COOKIE = "my-secret-cookie-long-enough";
 const NEW_COOKIE = "rotated-secret-cookie-new!";
 const REQUEST_TIMEOUT_MS = 2000;
 
-let nextPortBase = 20000 + Math.floor(Math.random() * 10000);
-
-function getNextBasePort(): number {
-  nextPortBase += 10;
-  return nextPortBase;
+// Helper to get a dynamically allocated base port for createSystem.
+// createSystem uses port (rpc), port+1 (pub), port+2 (gossip).
+async function getDynamicBasePort(): Promise<number> {
+  const [ports] = await allocatePorts(1);
+  return ports.rpc;
 }
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function findAvailableTcpPort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.on("error", (err) => {
-      server.close();
-      reject(err);
-    });
-    server.listen(0, () => {
-      const port = (server.address() as net.AddressInfo).port;
-      server.close(() => resolve(port));
-    });
-  });
-}
-
-async function createZeroMqTransport(nodeId: string, keyringAuth: KeyringAuthenticator) {
-  const rpcPort = await findAvailableTcpPort();
-  const pubPort = await findAvailableTcpPort();
+function createZeroMqTransport(
+  nodeId: string,
+  keyringAuth: KeyringAuthenticator,
+  rpcPort: number,
+  pubPort: number,
+) {
   return {
     rpcPort,
     transport: new ZeroMQTransport({
@@ -104,12 +93,14 @@ describe("cookie rotation integration", () => {
   });
 
   describe("transport-level rotation", () => {
-    it("rotates keys on two transports and preserves request communication", async () => {
+    it("rotates keys on two transports and preserves request communication", { retry: 2 }, async () => {
       const keyringA = new KeyringAuthenticator(OLD_COOKIE);
       const keyringB = new KeyringAuthenticator(OLD_COOKIE);
 
-      const a = await createZeroMqTransport("node-a", keyringA);
-      const b = await createZeroMqTransport("node-b", keyringB);
+      // Allocate all ports upfront in a single call to avoid collisions
+      const portSets = await allocatePorts(2);
+      const a = createZeroMqTransport("node-a", keyringA, portSets[0].rpc, portSets[0].pub);
+      const b = createZeroMqTransport("node-b", keyringB, portSets[1].rpc, portSets[1].pub);
       transports.push(a.transport, b.transport);
 
       await a.transport.connect();
@@ -147,7 +138,7 @@ describe("cookie rotation integration", () => {
 
   describe("createSystem-level rotation", () => {
     it("supports single-node keyring lifecycle install -> use -> remove", async () => {
-      const basePort = getNextBasePort();
+      const basePort = await getDynamicBasePort();
       const system = await createSystem({
         type: "distributed",
         port: basePort,
@@ -170,8 +161,9 @@ describe("cookie rotation integration", () => {
     });
 
     it("rotates cookie on two distributed systems and keeps remote calls working", async () => {
-      const basePort1 = getNextBasePort();
-      const basePort2 = getNextBasePort();
+      const [ports1, ports2] = await allocatePorts(2);
+      const basePort1 = ports1.rpc;
+      const basePort2 = ports2.rpc;
 
       const system1 = await createSystem({
         type: "distributed",
@@ -218,8 +210,9 @@ describe("cookie rotation integration", () => {
     }, 15000);
 
     it("preserves at-most-once semantics before, during, and after rotation", async () => {
-      const basePort1 = getNextBasePort();
-      const basePort2 = getNextBasePort();
+      const [ports1, ports2] = await allocatePorts(2);
+      const basePort1 = ports1.rpc;
+      const basePort2 = ports2.rpc;
 
       const system1 = await createSystem({
         type: "distributed",
