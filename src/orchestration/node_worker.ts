@@ -33,6 +33,10 @@ export interface NodeWorkerBootMessage {
 export interface NodeWorkerReadyMessage {
   type: "ready";
   nodeId: string;
+  /** Internal actor ID of the NodeAgent (for direct ref construction) */
+  agentActorId: string;
+  /** Registered name of the NodeAgent */
+  agentName: string;
 }
 
 /** Message sent from NodeWorker to TestCluster on boot failure */
@@ -145,6 +149,8 @@ if (process.send) {
         process.send!({
           type: "ready",
           nodeId: system.nodeId,
+          agentActorId: agentRef.id.id,
+          agentName: `node-agent@${system.nodeId}`,
         } satisfies NodeWorkerReadyMessage);
       } catch (err: any) {
         process.send!({

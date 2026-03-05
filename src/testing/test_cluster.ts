@@ -12,7 +12,7 @@ import { allocatePorts, NodePorts } from "./port_allocator";
 import { FaultyTransport } from "./faulty_transport";
 import { FaultyGossipUDP } from "./faulty_gossip";
 import type { System } from "../create_system";
-import type { ActorRef } from "../actor";
+import { ActorId, type ActorRef } from "../actor";
 import type { Transport } from "../transport";
 import type { GossipUDP } from "../gossip_udp";
 import type {
@@ -212,7 +212,7 @@ export class TestCluster {
     }
 
     // Fork worker nodes
-    const workerReadyPromises: Promise<string>[] = [];
+    const workerReadyPromises: Promise<NodeWorkerReadyMessage>[] = [];
 
     for (let i = 0; i < size; i++) {
       const nodeId = `${uniquePrefix}-${i}`;
@@ -248,7 +248,7 @@ export class TestCluster {
         }
       });
 
-      const readyPromise = new Promise<string>((resolve, reject) => {
+      const readyPromise = new Promise<NodeWorkerReadyMessage>((resolve, reject) => {
         const timer = setTimeout(() => {
           reject(new Error(`Worker ${nodeId} failed to boot within ${timeout}ms`));
         }, timeout);
@@ -256,7 +256,7 @@ export class TestCluster {
         child.on("message", (msg: NodeWorkerResponse) => {
           if (msg.type === "ready") {
             clearTimeout(timer);
-            resolve(msg.nodeId);
+            resolve(msg);
           } else if (msg.type === "error") {
             clearTimeout(timer);
             reject(new Error(`Worker ${nodeId} boot error: ${msg.error}`));
@@ -301,7 +301,8 @@ export class TestCluster {
     // Wait for all workers to be ready (IPC "ready" messages)
     // This ensures their gossip UDP sockets are bound before the controller
     // tries to reach them via seed nodes.
-    await Promise.all(workerReadyPromises);
+    // Each ready message includes the NodeAgent's actor ID for direct ref construction.
+    const readyMessages = await Promise.all(workerReadyPromises);
 
     // Boot controller system AFTER workers are ready to avoid gossip
     // seed node resolution failures (UDP packets to unbound ports are lost).
@@ -347,35 +348,32 @@ export class TestCluster {
       timeout,
     });
 
-    // After cluster formation, SUB sockets are connected but workers
-    // may have published their registry entries before the SUB handshake
-    // completed. Tell all workers to re-publish their registry entries.
-    const triggerResync = () => {
-      for (const child of childProcesses) {
-        if (child.connected) {
-          child.send({ type: "resync-registry" });
-        }
+    // Trigger registry resync to warm up PUB/SUB connections.
+    // While NodeAgent refs are constructed directly via IPC (no PUB/SUB needed),
+    // subsequent actor name lookups (e.g., actors spawned by tests via NodeAgent)
+    // still rely on PUB/SUB registry sync. The resync exercises PUB/SUB so
+    // that by the time the test body runs, SUB sockets are connected.
+    for (const child of childProcesses) {
+      if (child.connected) {
+        child.send({ type: "resync-registry" });
       }
-    };
-    triggerResync();
-
+    }
     // Give SUB sockets time to receive the re-published entries
     await new Promise((r) => setTimeout(r, 500));
 
-    // Resolve NodeAgent refs for each worker.
-    // Pass the resync callback so retryGetActor can periodically
-    // re-trigger registry publishing if PUB/SUB messages were lost.
+    // Construct NodeAgent refs directly using actor IDs from IPC ready messages.
+    // This bypasses PUB/SUB registry sync entirely — the controller constructs
+    // the ActorRef from the exact actor ID the worker reported, making cluster
+    // formation deterministic regardless of SUB socket connection timing.
     for (let i = 0; i < size; i++) {
       const nodeId = `${uniquePrefix}-${i}`;
       const ports = workerPortSets[i];
       const child = childProcesses[i];
+      const readyMsg = readyMessages[i];
 
-      // Retry getActorByName with backoff — registry sync may lag behind gossip
-      const agentRef = await retryGetActor(
-        controllerSystem,
-        `node-agent@${nodeId}`,
-        timeout,
-        triggerResync,
+      // Direct ref construction — no PUB/SUB dependency
+      const agentRef = controllerSystem.system.getRef(
+        new ActorId(readyMsg.nodeId, readyMsg.agentActorId, readyMsg.agentName),
       );
 
       nodeHandles.push(createNodeHandle(
@@ -618,10 +616,10 @@ async function retryGetActor(
     if (ref) return ref;
 
     attempts++;
-    // Re-trigger registry sync every 3 seconds during retries.
+    // Re-trigger registry sync every 2 seconds during retries.
     // PUB/SUB messages can be lost if SUB sockets haven't fully connected
     // yet — periodic resync gives multiple chances for delivery.
-    if (onResync && Date.now() - lastResyncAt >= 3000) {
+    if (onResync && Date.now() - lastResyncAt >= 2000) {
       onResync();
       lastResyncAt = Date.now();
     }
