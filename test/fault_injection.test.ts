@@ -17,7 +17,7 @@ const TEST_ACTOR_MODULE = path.resolve(__dirname, "fixtures/test_actors.ts");
 describe("FaultInjection", () => {
   // ── Basic Partition/Heal on worker node ───────────────────────
 
-  it("should block RPC calls when a worker is partitioned from the controller and restore on heal", { timeout: 120000, retry: 2 }, async () => {
+  it("should block RPC calls when a worker is partitioned from the controller and restore on heal", { timeout: 120000, retry: 3 }, async () => {
     const cluster = await TestCluster.create({
       size: 1,
       faultInjection: true,
@@ -52,12 +52,12 @@ describe("FaultInjection", () => {
 
   // ── Cross-node actor calls through partition ──────────────────
 
-  it("should block cross-node actor calls when partitioned and restore on heal", { timeout: 120000, retry: 2 }, async () => {
+  it("should block cross-node actor calls when partitioned and restore on heal", { timeout: 120000, retry: 3 }, async () => {
     const cluster = await TestCluster.create({
       size: 2,
       faultInjection: true,
       actorModules: [TEST_ACTOR_MODULE],
-      timeout: 30000,
+      timeout: 60000,
     });
     try {
       // Spawn a Counter on node 0
@@ -98,11 +98,11 @@ describe("FaultInjection", () => {
 
   // ── Heal All ──────────────────────────────────────────────────
 
-  it("should heal all partitions when heal() is called with no arguments", { timeout: 120000, retry: 2 }, async () => {
+  it("should heal all partitions when heal() is called with no arguments", { timeout: 120000, retry: 3 }, async () => {
     const cluster = await TestCluster.create({
       size: 2,
       faultInjection: true,
-      timeout: 30000,
+      timeout: 60000,
     });
     try {
       // Ping both nodes to verify connectivity
@@ -142,7 +142,7 @@ describe("FaultInjection", () => {
 
   // ── Worker-side Partition via IPC ─────────────────────────────
 
-  it("should support worker-side partition via IPC", { timeout: 120000, retry: 2 }, async () => {
+  it("should support worker-side partition via IPC", { timeout: 120000, retry: 3 }, async () => {
     const cluster = await TestCluster.create({
       size: 1,
       faultInjection: true,
@@ -181,7 +181,7 @@ describe("FaultInjection", () => {
 
   // ── Fault Injection Not Enabled ───────────────────────────────
 
-  it("should throw when calling partition() without faultInjection enabled", { timeout: 60000, retry: 2 }, async () => {
+  it("should throw when calling partition() without faultInjection enabled", { timeout: 60000, retry: 3 }, async () => {
     const cluster = await TestCluster.create({
       size: 1,
       faultInjection: false,

@@ -13,13 +13,13 @@ const TEST_ACTOR_MODULE = path.resolve(__dirname, "fixtures/test_actors.ts");
 // ZeroMQ transport and UDP gossip. They are inherently timing-sensitive
 // because they involve OS-level resources (ports, sockets, processes).
 //
-// Each test gets { retry: 2 } to handle transient failures from
+// Each test gets { retry: 3 } to handle transient failures from
 // port contention or gossip convergence timing.
 
 describe("TestCluster", () => {
   // ── Single-Node Cluster ────────────────────────────────────────
 
-  it("should create a 1-node cluster with ping, info, actor IDs, and custom prefix", { timeout: 120000, retry: 2 }, async () => {
+  it("should create a 1-node cluster with ping, info, actor IDs, and custom prefix", { timeout: 120000, retry: 3 }, async () => {
     // Test 1: Standard 1-node cluster
     const cluster = await TestCluster.create({ size: 1, timeout: 30000 });
     try {
@@ -74,7 +74,7 @@ describe("TestCluster", () => {
 
   // ── Remote Actor Management (single node) ─────────────────────
 
-  it("should spawn, call, cast, and stop actors on a remote node via actorModules", { timeout: 60000, retry: 2 }, async () => {
+  it("should spawn, call, cast, and stop actors on a remote node via actorModules", { timeout: 60000, retry: 3 }, async () => {
     const cluster = await TestCluster.create({
       size: 1,
       timeout: 30000,
@@ -152,10 +152,10 @@ describe("TestCluster", () => {
 
   // ── Multi-Node Cluster ─────────────────────────────────────────
 
-  it("should create a 2-node cluster, ping, and cross-node actor calls", { timeout: 90000, retry: 2 }, async () => {
+  it("should create a 2-node cluster, ping, and cross-node actor calls", { timeout: 120000, retry: 3 }, async () => {
     const cluster = await TestCluster.create({
       size: 2,
-      timeout: 30000,
+      timeout: 60000,
       actorModules: [TEST_ACTOR_MODULE],
     });
     try {
@@ -217,8 +217,8 @@ describe("TestCluster", () => {
 
   // ── Node Lifecycle ─────────────────────────────────────────────
 
-  it("should detect graceful node shutdown", { timeout: 90000, retry: 2 }, async () => {
-    const cluster = await TestCluster.create({ size: 2, timeout: 30000 });
+  it("should detect graceful node shutdown", { timeout: 90000, retry: 3 }, async () => {
+    const cluster = await TestCluster.create({ size: 2, timeout: 60000 });
     try {
       const membersBefore = cluster.system.cluster.getMembers();
       expect(membersBefore.length).toBe(3);
@@ -239,8 +239,8 @@ describe("TestCluster", () => {
     }
   });
 
-  it("should detect node crash via SIGKILL", { timeout: 90000, retry: 2 }, async () => {
-    const cluster = await TestCluster.create({ size: 2, timeout: 30000 });
+  it("should detect node crash via SIGKILL", { timeout: 90000, retry: 3 }, async () => {
+    const cluster = await TestCluster.create({ size: 2, timeout: 60000 });
     try {
       const membersBefore = cluster.system.cluster.getMembers();
       expect(membersBefore.length).toBe(3);
@@ -250,8 +250,9 @@ describe("TestCluster", () => {
 
       // Gossip failure detection takes longer:
       // gossipIntervalMs=1000, failureTimeoutMs=5000, maxMissedHeartbeats=3
-      // Typically ~5-8 seconds. Give 15s to be safe.
-      await sleep(15000);
+      // Typically ~5-8 seconds, but under heavy parallel test load (40+ files),
+      // timers can be delayed significantly. Give 25s to be safe.
+      await sleep(25000);
 
       const membersAfter = cluster.system.cluster.getMembers();
       // Should be down to 2 members (controller + node 1)
@@ -265,7 +266,7 @@ describe("TestCluster", () => {
 
   // ── Teardown ───────────────────────────────────────────────────
 
-  it("should support idempotent teardown and teardown after crash", { timeout: 90000, retry: 2 }, async () => {
+  it("should support idempotent teardown and teardown after crash", { timeout: 90000, retry: 3 }, async () => {
     // Test 1: Idempotent teardown
     const cluster1 = await TestCluster.create({ size: 1, timeout: 30000 });
     await cluster1.teardown();

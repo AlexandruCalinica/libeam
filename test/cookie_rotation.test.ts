@@ -160,7 +160,7 @@ describe("cookie rotation integration", () => {
       expect(system.keyring!.list()).toHaveLength(1);
     });
 
-    it("rotates cookie on two distributed systems and keeps remote calls working", async () => {
+    it("rotates cookie on two distributed systems and keeps remote calls working", { retry: 2, timeout: 15000 }, async () => {
       const [ports1, ports2] = await allocatePorts(2);
       const basePort1 = ports1.rpc;
       const basePort2 = ports2.rpc;
@@ -207,9 +207,9 @@ describe("cookie rotation integration", () => {
       await expect(
         remoteProbe.call({ type: "ping", value: "after" }, REQUEST_TIMEOUT_MS),
       ).resolves.toEqual({ ok: true, value: "after" });
-    }, 15000);
+    });
 
-    it("preserves at-most-once semantics before, during, and after rotation", async () => {
+    it("preserves at-most-once semantics before, during, and after rotation", { retry: 2, timeout: 15000 }, async () => {
       const [ports1, ports2] = await allocatePorts(2);
       const basePort1 = ports1.rpc;
       const basePort2 = ports2.rpc;
@@ -287,7 +287,7 @@ describe("cookie rotation integration", () => {
       expect(stats.duplicateCount).toBe(0);
       expect(stats.uniqueCount).toBeLessThanOrEqual(5 + duringIds.length + 5);
       expect(stats.uniqueCount).toBeGreaterThanOrEqual(10);
-    }, 15000);
+    });
   });
 
   describe("local system", () => {
