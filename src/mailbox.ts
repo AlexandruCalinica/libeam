@@ -1,5 +1,5 @@
-import { StashedMessage } from "./actor";
-import { MailboxFullError } from "./errors";
+import { StashedMessage } from "./actor.js";
+import { MailboxFullError } from "./errors.js";
 
 export type MailboxOverflowStrategy = "drop-newest" | "drop-oldest" | "error";
 

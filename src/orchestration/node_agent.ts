@@ -1,9 +1,9 @@
 // src/orchestration/node_agent.ts
 
-import { createActor } from "../create_actor";
-import type { System } from "../create_system";
-import type { SpawnOptions } from "../actor_system";
-import type { ActorDefinition } from "../types/functional";
+import { createActor } from "../create_actor.js";
+import type { System } from "../create_system.js";
+import type { SpawnOptions } from "../actor_system.js";
+import type { ActorDefinition } from "../types/functional.js";
 
 /**
  * Options passed to `spawn` via NodeAgent.

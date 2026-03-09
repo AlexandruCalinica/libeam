@@ -8,14 +8,14 @@ import {
   LinkRef,
   TimerRef,
   WatchRef,
-} from "./actor";
-import type { SpawnOptions } from "./actor_system";
+} from "./actor.js";
+import type { SpawnOptions } from "./actor_system.js";
 import type {
   ActorBuilder,
   ActorContext,
   ActorDefinition,
   TypedActorRef,
-} from "./types/functional";
+} from "./types/functional.js";
 
 type CallHandler = (...args: any[]) => any;
 type CastHandler = (...args: any[]) => void;

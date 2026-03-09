@@ -1,7 +1,7 @@
 // src/placement.ts
 
-import { Cluster } from './cluster';
-import { NoRoleMatchError } from './errors';
+import { Cluster } from './cluster.js';
+import { NoRoleMatchError } from './errors.js';
 
 export type PlacementStrategy = 'local' | 'round-robin';
 

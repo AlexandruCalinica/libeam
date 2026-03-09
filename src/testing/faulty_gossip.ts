@@ -10,10 +10,10 @@
 //
 // Usage: Controlled via IPC from TestCluster. Not used directly in tests.
 
-import { EventEmitter } from "events";
-import type { GossipUDP } from "../gossip_udp";
-import type { GossipMessage } from "../gossip";
-import { createLogger, Logger } from "../logger";
+import { EventEmitter } from "node:events";
+import type { GossipUDP } from "../gossip_udp.js";
+import type { GossipMessage } from "../gossip.js";
+import { createLogger, Logger } from "../logger.js";
 
 /**
  * FaultyGossipUDP — wraps a real GossipUDP instance and selectively

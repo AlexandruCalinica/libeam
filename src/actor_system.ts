@@ -16,7 +16,7 @@ import {
   StashedMessage,
   isInitContinue,
   isMigratable,
-} from "./actor";
+} from "./actor.js";
 import {
   MigratePrepareRequest,
   MigratePrepareResponse,
@@ -30,21 +30,21 @@ import {
   MigrationInProgressError,
   StateSerializationTimeoutError,
   MigrationResult,
-} from "./migration";
+} from "./migration.js";
 import { v4 as uuidv4 } from "uuid";
-import { Supervisor, SupervisionOptions } from "./supervisor";
-import { ChildSupervisor } from "./child_supervisor";
-import { Transport } from "./transport";
-import { Registry } from "./registry";
-import { Cluster } from "./cluster";
-import { PlacementEngine, PlacementStrategy } from "./placement";
-import { Logger, createLogger } from "./logger";
+import { Supervisor, SupervisionOptions } from "./supervisor.js";
+import { ChildSupervisor } from "./child_supervisor.js";
+import { Transport } from "./transport.js";
+import { Registry } from "./registry.js";
+import { Cluster } from "./cluster.js";
+import { PlacementEngine, PlacementStrategy } from "./placement.js";
+import { Logger, createLogger } from "./logger.js";
 import {
   HeartbeatManager,
   HeartbeatConfig,
   HeartbeatPing,
   DEFAULT_HEARTBEAT_CONFIG,
-} from "./heartbeat";
+} from "./heartbeat.js";
 import {
   ActorNotFoundError,
   ActorClassNotRegisteredError,
@@ -52,13 +52,13 @@ import {
   RegistryLookupError,
   SystemShuttingDownError,
   TimeoutError,
-} from "./errors";
-import { HealthCheckable, ComponentHealth } from "./health";
-import { BoundedMailbox, type MailboxConfig } from "./mailbox";
-import type { ActorDefinition } from "./types/functional";
-import { TypedActorRef } from "./types/functional";
-import { GroupMember, ProcessGroupManager } from "./process_group";
-import { telemetry, TelemetryEvents } from "./telemetry";
+} from "./errors.js";
+import { HealthCheckable, ComponentHealth } from "./health.js";
+import { BoundedMailbox, type MailboxConfig } from "./mailbox.js";
+import type { ActorDefinition } from "./types/functional.js";
+import { TypedActorRef } from "./types/functional.js";
+import { GroupMember, ProcessGroupManager } from "./process_group.js";
+import { telemetry, TelemetryEvents } from "./telemetry.js";
 
 export interface SpawnOptions {
   name?: string;

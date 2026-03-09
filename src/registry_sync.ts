@@ -1,10 +1,10 @@
 // src/registry_sync.ts
 
-import { EventEmitter } from "events";
-import { Transport } from "./transport";
-import { Cluster } from "./cluster";
-import { VectorClock } from "./vector_clock";
-import { Registry, ActorLocation } from "./registry";
+import { EventEmitter } from "node:events";
+import { Transport } from "./transport.js";
+import { Cluster } from "./cluster.js";
+import { VectorClock } from "./vector_clock.js";
+import { Registry, ActorLocation } from "./registry.js";
 
 export interface ActorRegistration {
   name: string;

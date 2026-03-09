@@ -1,5 +1,5 @@
-import { StashedMessage } from "./actor";
-import { LibeamError } from "./errors";
+import { StashedMessage } from "./actor.js";
+import { LibeamError } from "./errors.js";
 
 export class ActorNotMigratableError extends LibeamError {
   constructor(actorId: string) {

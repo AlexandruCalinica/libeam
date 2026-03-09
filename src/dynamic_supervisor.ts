@@ -8,13 +8,13 @@ import {
   Actor,
   ActorRef,
   ChildSupervisionOptions,
-} from "./actor";
-import { ActorSystem, SpawnOptions } from "./actor_system";
-import { MaxChildrenError } from "./errors";
+} from "./actor.js";
+import { ActorSystem, SpawnOptions } from "./actor_system.js";
+import { MaxChildrenError } from "./errors.js";
 import type {
   ActorDefinition,
   TypedActorRef,
-} from "./types/functional";
+} from "./types/functional.js";
 
 // ============ Configuration ============
 

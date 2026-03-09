@@ -1,10 +1,10 @@
 // src/gossip_udp.ts
 
-import * as dgram from "dgram";
-import { EventEmitter } from "events";
-import type { Authenticator } from "./auth";
-import { AuthenticatedGossipMessage, GossipMessage } from "./gossip";
-import { Logger, createLogger } from "./logger";
+import * as dgram from "node:dgram";
+import { EventEmitter } from "node:events";
+import type { Authenticator } from "./auth.js";
+import { AuthenticatedGossipMessage, GossipMessage } from "./gossip.js";
+import { Logger, createLogger } from "./logger.js";
 
 const UDP_MAX_SIZE = 65507; // Maximum size for a UDP payload
 

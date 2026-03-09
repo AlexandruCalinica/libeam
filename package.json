@@ -1,29 +1,61 @@
 {
   "name": "libeam",
-  "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "version": "0.1.0",
+  "description": "Erlang/OTP-inspired actor system for TypeScript — actors, supervision, distribution, GenStage",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./testing": {
+      "types": "./dist/testing/index.d.ts",
+      "import": "./dist/testing/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
   "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "prepublishOnly": "npm run build",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
     "check": "npm run typecheck && npm run test",
-    "example:chat": "ts-node examples/chat.ts",
     "bench": "vitest bench"
   },
-  "keywords": [],
+  "keywords": [
+    "actor",
+    "actors",
+    "otp",
+    "erlang",
+    "elixir",
+    "supervisor",
+    "distributed",
+    "genstage",
+    "genserver",
+    "fault-tolerant",
+    "message-passing",
+    "concurrency"
+  ],
   "author": "",
   "license": "ISC",
   "packageManager": "pnpm@10.23.0",
+  "engines": {
+    "node": ">=18"
+  },
   "devDependencies": {
     "@types/node": "^24.10.1",
     "eslint": "^9.39.1",
-    "ts-node": "^10.9.2",
+    "tsx": "^4.21.0",
     "typescript": "^5.9.3",
     "vitest": "^4.0.13"
   },
   "dependencies": {
-    "gossip-js": "^0.0.4",
     "uuid": "^13.0.0",
     "zeromq": "^6.5.0"
   }

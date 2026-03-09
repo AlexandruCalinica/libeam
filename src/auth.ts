@@ -1,6 +1,6 @@
-import crypto from "crypto";
-import type { GossipMessage } from "./gossip";
-import { CookieRotationError } from "./errors";
+import crypto from "node:crypto";
+import type { GossipMessage } from "./gossip.js";
+import { CookieRotationError } from "./errors.js";
 
 /**
  * A gossip message with authentication fields for HMAC verification

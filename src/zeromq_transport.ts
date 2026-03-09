@@ -1,8 +1,8 @@
 import * as zmq from "zeromq";
-import { MessageHandler, RequestHandler, Subscription, Transport } from "./transport";
+import { MessageHandler, RequestHandler, Subscription, Transport } from "./transport.js";
 import { v4 as uuidv4 } from "uuid";
-import { createLogger, Logger } from "./logger";
-import { PeerNotFoundError, TimeoutError, TransportError } from "./errors";
+import { createLogger, Logger } from "./logger.js";
+import { PeerNotFoundError, TimeoutError, TransportError } from "./errors.js";
 
 interface PendingRequest {
   resolve: (value: any) => void;

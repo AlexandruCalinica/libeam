@@ -3,8 +3,8 @@
 // Dynamic port allocation for test clusters. Uses the OS to find
 // available ports by binding to port 0 and reading back the assigned port.
 
-import * as net from "net";
-import * as dgram from "dgram";
+import * as net from "node:net";
+import * as dgram from "node:dgram";
 
 /**
  * Port set for a single libeam node (rpc, pub, gossip).

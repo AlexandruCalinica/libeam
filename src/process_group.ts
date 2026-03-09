@@ -1,6 +1,6 @@
-import { Transport } from "./transport";
-import { Cluster } from "./cluster";
-import { createLogger, Logger } from "./logger";
+import { Transport } from "./transport.js";
+import { Cluster } from "./cluster.js";
+import { createLogger, Logger } from "./logger.js";
 
 export interface GroupMember {
   nodeId: string;

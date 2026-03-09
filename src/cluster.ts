@@ -1,6 +1,6 @@
 // src/cluster.ts
 
-import { EventEmitter } from "events";
+import { EventEmitter } from "node:events";
 
 /**
  * Peer information returned by getLivePeers.

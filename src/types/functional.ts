@@ -10,13 +10,13 @@ import {
   type LinkRef,
   type TimerRef,
   type WatchRef,
-} from "../actor";
-import type { ActorSystem, SystemTimeouts } from "../actor_system";
-import type { SpawnOptions } from "../actor_system";
-import type { Authenticator } from "../auth";
-import type { GossipOptions } from "../gossip_protocol";
-import type { MailboxConfig } from "../mailbox";
-import type { SupervisionOptions } from "../supervisor";
+} from "../actor.js";
+import type { ActorSystem, SystemTimeouts } from "../actor_system.js";
+import type { SpawnOptions } from "../actor_system.js";
+import type { Authenticator } from "../auth.js";
+import type { GossipOptions } from "../gossip_protocol.js";
+import type { MailboxConfig } from "../mailbox.js";
+import type { SupervisionOptions } from "../supervisor.js";
 
 export type { InitContinue };
 export { isInitContinue };
@@ -110,9 +110,9 @@ export interface DistributedConfig {
   /** Configurable timeouts for actor operations */
   timeouts?: SystemTimeouts;
   /** @internal Transport wrapper factory for testing (fault injection). Not part of public API. */
-  _wrapTransport?: (transport: import("../transport").Transport) => import("../transport").Transport;
+  _wrapTransport?: (transport: import("../transport.js").Transport) => import("../transport.js").Transport;
   /** @internal GossipUDP wrapper factory for testing (fault injection). Not part of public API. */
-  _wrapGossipUDP?: (gossip: import("../gossip_udp").GossipUDP) => any;
+  _wrapGossipUDP?: (gossip: import("../gossip_udp.js").GossipUDP) => any;
 }
 
 

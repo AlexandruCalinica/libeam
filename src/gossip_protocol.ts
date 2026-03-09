@@ -1,14 +1,14 @@
 // src/gossip_protocol.ts
 
-import type { Authenticator } from "./auth";
-import { GossipMessage, PeerState, PeerStatus, GOSSIP_PROTOCOL_VERSION } from "./gossip";
+import type { Authenticator } from "./auth.js";
+import { GossipMessage, GOSSIP_PROTOCOL_VERSION } from "./gossip.js";
+import type { PeerState, PeerStatus } from "./gossip.js";
 
-// Re-export PeerState and PeerStatus for consumers of this module
-export { PeerState, PeerStatus } from "./gossip";
-import { GossipUDP } from "./gossip_udp";
-import { Logger, createLogger } from "./logger";
-import { EventEmitter } from "events";
-import * as dgram from "dgram";
+export type { PeerState, PeerStatus } from "./gossip.js";
+import { GossipUDP } from "./gossip_udp.js";
+import { Logger, createLogger } from "./logger.js";
+import { EventEmitter } from "node:events";
+import * as dgram from "node:dgram";
 
 export interface GossipOptions {
   /** Interval in ms to send gossip messages. */

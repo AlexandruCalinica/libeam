@@ -1,4 +1,4 @@
-import type { ActorSystem, SpawnOptions } from "./actor_system";
+import type { ActorSystem, SpawnOptions } from "./actor_system.js";
 
 /**
  * Unique reference for a watch relationship.

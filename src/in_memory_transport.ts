@@ -1,12 +1,12 @@
 // src/in_memory_transport.ts
 
-import { EventEmitter } from "events";
+import { EventEmitter } from "node:events";
 import {
   Transport,
   Subscription,
   MessageHandler,
   RequestHandler,
-} from "./transport";
+} from "./transport.js";
 
 /**
  * An in-memory implementation of the Transport interface, useful for testing

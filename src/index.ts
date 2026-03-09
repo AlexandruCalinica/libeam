@@ -1,51 +1,51 @@
-export * from "./logger";
-export * from "./telemetry";
-export * from "./errors";
-export * from "./health";
-export * from "./actor";
-export * from "./actor_system";
-export * from "./agent";
-export * from "./supervisor";
-export * from "./child_supervisor";
-export * from "./transport";
-export * from "./registry";
-export * from "./in_memory_transport";
-export * from "./local_registry";
-export * from "./local_cluster";
-export * from "./cluster";
-export * from "./placement";
-export * from "./gossip";
-export * from "./gossip_udp";
-export * from "./gossip_protocol";
-export * from "./distributed_cluster";
-export * from "./zeromq_transport";
-export * from "./vector_clock";
-export * from "./distributed_registry";
-export * from "./heartbeat";
-export * from "./migration";
-export * from "./create_system";
-export * from "./create_actor";
-export * from "./process_group";
-export * from "./mailbox";
-export * from "./dynamic_supervisor";
-export * from "./gen_stage";
-export * from "./orchestration/node_agent";
-export * from "./orchestration/node_worker";
-export * from "./testing";
-export { AuthenticationError } from "./errors";
-export { AuthenticatedGossipMessage } from "./gossip";
+export * from "./logger.js";
+export * from "./telemetry.js";
+export * from "./errors.js";
+export * from "./health.js";
+export * from "./actor.js";
+export * from "./actor_system.js";
+export * from "./agent.js";
+export * from "./supervisor.js";
+export * from "./child_supervisor.js";
+export * from "./transport.js";
+export * from "./registry.js";
+export * from "./in_memory_transport.js";
+export * from "./local_registry.js";
+export * from "./local_cluster.js";
+export * from "./cluster.js";
+export * from "./placement.js";
+export * from "./gossip.js";
+export * from "./gossip_udp.js";
+export * from "./gossip_protocol.js";
+export * from "./distributed_cluster.js";
+export * from "./zeromq_transport.js";
+export * from "./vector_clock.js";
+export * from "./distributed_registry.js";
+export * from "./heartbeat.js";
+export * from "./migration.js";
+export * from "./create_system.js";
+export * from "./create_actor.js";
+export * from "./process_group.js";
+export * from "./mailbox.js";
+export * from "./dynamic_supervisor.js";
+export * from "./gen_stage.js";
+export * from "./orchestration/node_agent.js";
+export * from "./orchestration/node_worker.js";
+export * from "./testing/index.js";
+export { AuthenticationError } from "./errors.js";
+export type { AuthenticatedGossipMessage } from "./gossip.js";
 export {
-  Authenticator,
   CookieAuthenticator,
   NullAuthenticator,
   deriveKeys,
   z85Encode,
   z85Decode,
-  CurveKeyPair,
   KeyringAuthenticator,
   fingerprint,
-} from "./auth";
-export {
+} from "./auth.js";
+export type { Authenticator, CurveKeyPair } from "./auth.js";
+export { TypedActorRef } from "./types/functional.js";
+export type {
   LocalConfig,
   DistributedConfig,
   SupervisionConfig,
@@ -58,6 +58,5 @@ export {
   ExtractCalls,
   ExtractCasts,
   ActorRefFrom,
-  TypedActorRef,
   ActorContext,
-} from "./types/functional";
+} from "./types/functional.js";

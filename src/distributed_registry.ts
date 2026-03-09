@@ -1,5 +1,5 @@
-import { Registry, ActorLocation, NameReservation } from "./registry";
-import { RegistrySync } from "./registry_sync";
+import { Registry, ActorLocation, NameReservation } from "./registry.js";
+import { RegistrySync } from "./registry_sync.js";
 import { v4 as uuidv4 } from "uuid";
 
 const DEFAULT_RESERVATION_TTL_MS = 30000;

@@ -4,17 +4,18 @@
 // cluster on a single machine. Used for integration testing with real
 // ZeroMQ transport and UDP gossip.
 
-import { fork, ChildProcess } from "child_process";
-import * as path from "path";
-import { createSystem } from "../create_system";
-import { NodeAgent } from "../orchestration/node_agent";
-import { allocatePorts, NodePorts } from "./port_allocator";
-import { FaultyTransport } from "./faulty_transport";
-import { FaultyGossipUDP } from "./faulty_gossip";
-import type { System } from "../create_system";
-import { ActorId, type ActorRef } from "../actor";
-import type { Transport } from "../transport";
-import type { GossipUDP } from "../gossip_udp";
+import { fork, ChildProcess } from "node:child_process";
+import * as path from "node:path";
+import { fileURLToPath } from "node:url";
+import { createSystem } from "../create_system.js";
+import { NodeAgent } from "../orchestration/node_agent.js";
+import { allocatePorts, NodePorts } from "./port_allocator.js";
+import { FaultyTransport } from "./faulty_transport.js";
+import { FaultyGossipUDP } from "./faulty_gossip.js";
+import type { System } from "../create_system.js";
+import { ActorId, type ActorRef } from "../actor.js";
+import type { Transport } from "../transport.js";
+import type { GossipUDP } from "../gossip_udp.js";
 import type {
   NodeWorkerBootMessage,
   NodeWorkerReadyMessage,
@@ -22,7 +23,7 @@ import type {
   NodeWorkerResponse,
   NodeWorkerPartitionMessage,
   NodeWorkerHealMessage,
-} from "../orchestration/node_worker";
+} from "../orchestration/node_worker.js";
 
 /**
  * Handle to a test node running in a forked child process.
@@ -75,8 +76,16 @@ export interface TestClusterConfig {
   faultInjection?: boolean;
 }
 
-// Resolve the node_worker.ts path relative to this file
-const NODE_WORKER_PATH = path.resolve(__dirname, "../orchestration/node_worker.ts");
+// Resolve the node worker path relative to this file.
+// Detect source (.ts) vs compiled (.js) context from the current module URL.
+const __test_cluster_dirname = path.dirname(fileURLToPath(import.meta.url));
+const __isSourceContext = import.meta.url.endsWith(".ts");
+const NODE_WORKER_PATH = path.resolve(
+  __test_cluster_dirname,
+  __isSourceContext
+    ? "../orchestration/node_worker.ts"
+    : "../orchestration/node_worker.js",
+);
 
 /**
  * TestCluster — spawns a multi-process libeam cluster for integration testing.
@@ -224,7 +233,7 @@ export class TestCluster {
       );
 
       const child = fork(NODE_WORKER_PATH, [], {
-        execArgv: ["-r", "ts-node/register/transpile-only"],
+        execArgv: __isSourceContext ? ["--import", "tsx"] : [],
         stdio: ["pipe", "pipe", "pipe", "ipc"],
         env: {
           ...Object.fromEntries(

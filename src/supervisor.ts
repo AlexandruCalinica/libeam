@@ -1,9 +1,9 @@
 // src/supervisor.ts
 
-import { ActorRef, TerminationReason } from "./actor";
-import { ActorSystem } from "./actor_system";
-import { Logger, createLogger } from "./logger";
-import { telemetry, TelemetryEvents } from "./telemetry";
+import { ActorRef, TerminationReason } from "./actor.js";
+import { ActorSystem } from "./actor_system.js";
+import { Logger, createLogger } from "./logger.js";
+import { telemetry, TelemetryEvents } from "./telemetry.js";
 
 export type SupervisionStrategy = "Restart" | "Stop";
 

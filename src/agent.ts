@@ -3,8 +3,8 @@
 // Agent: A simple abstraction for state management.
 // Wraps an actor with get/update/getAndUpdate operations.
 
-import { Actor, ActorRef } from "./actor";
-import { ActorSystem, SpawnOptions } from "./actor_system";
+import { Actor, ActorRef } from "./actor.js";
+import { ActorSystem, SpawnOptions } from "./actor_system.js";
 
 /**
  * Message types for Agent internal communication

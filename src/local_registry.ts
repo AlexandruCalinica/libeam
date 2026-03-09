@@ -1,4 +1,4 @@
-import { Registry, ActorLocation, NameReservation } from "./registry";
+import { Registry, ActorLocation, NameReservation } from "./registry.js";
 import { v4 as uuidv4 } from "uuid";
 
 const DEFAULT_RESERVATION_TTL_MS = 30000;

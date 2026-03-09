@@ -1,9 +1,9 @@
 // src/heartbeat.ts
 
-import { EventEmitter } from "events";
-import { Transport } from "./transport";
-import { Cluster, ClusterPeer } from "./cluster";
-import { createLogger, Logger } from "./logger";
+import { EventEmitter } from "node:events";
+import { Transport } from "./transport.js";
+import { Cluster, ClusterPeer } from "./cluster.js";
+import { createLogger, Logger } from "./logger.js";
 
 /**
  * Configuration for the heartbeat protocol.

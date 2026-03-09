@@ -17,9 +17,9 @@ import {
   MessageHandler,
   RequestHandler,
   Subscription,
-} from "../transport";
-import { TransportError } from "../errors";
-import { createLogger, Logger } from "../logger";
+} from "../transport.js";
+import { TransportError } from "../errors.js";
+import { createLogger, Logger } from "../logger.js";
 
 export class FaultyTransport implements Transport {
   private readonly partitionedPeers = new Set<string>();

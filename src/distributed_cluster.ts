@@ -1,10 +1,10 @@
 // src/distributed_cluster.ts
 
-import { EventEmitter } from "events";
-import { GossipProtocol, PeerState } from "./gossip_protocol";
-import { Cluster } from "./cluster";
-import { HealthCheckable, ComponentHealth } from "./health";
-import { telemetry, TelemetryEvents } from "./telemetry";
+import { EventEmitter } from "node:events";
+import { GossipProtocol, PeerState } from "./gossip_protocol.js";
+import { Cluster } from "./cluster.js";
+import { HealthCheckable, ComponentHealth } from "./health.js";
+import { telemetry, TelemetryEvents } from "./telemetry.js";
 
 /**
  * A wrapper around the GossipProtocol that provides a cluster interface

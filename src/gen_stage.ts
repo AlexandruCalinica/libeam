@@ -20,11 +20,11 @@ import {
   DownMessage,
   InfoMessage,
   WatchRef,
-} from "./actor";
-import { ActorSystem, SpawnOptions } from "./actor_system";
-import { ChildCounts, ChildInfo } from "./dynamic_supervisor";
-import { createLogger, Logger } from "./logger";
-import { telemetry, TelemetryEvents } from "./telemetry";
+} from "./actor.js";
+import { ActorSystem, SpawnOptions } from "./actor_system.js";
+import { ChildCounts, ChildInfo } from "./dynamic_supervisor.js";
+import { createLogger, Logger } from "./logger.js";
+import { telemetry, TelemetryEvents } from "./telemetry.js";
 
 // ============ Configuration ============
 

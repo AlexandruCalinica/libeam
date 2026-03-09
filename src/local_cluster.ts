@@ -1,8 +1,8 @@
 // src/local_cluster.ts
 
-import { EventEmitter } from "events";
-import { Cluster, ClusterPeer } from "./cluster";
-import { HealthCheckable, ComponentHealth } from "./health";
+import { EventEmitter } from "node:events";
+import { Cluster, ClusterPeer } from "./cluster.js";
+import { HealthCheckable, ComponentHealth } from "./health.js";
 
 /**
  * A local-only cluster implementation for single-node deployments.

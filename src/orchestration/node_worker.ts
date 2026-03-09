@@ -7,12 +7,12 @@
 // Receives config via IPC from parent (TestCluster), boots a real
 // distributed system, spawns a NodeAgent, and signals readiness.
 
-import { createSystem } from "../create_system";
-import { NodeAgent } from "./node_agent";
-import type { System } from "../create_system";
-import type { ActorDefinition } from "../types/functional";
-import type { FaultyTransport } from "../testing/faulty_transport";
-import type { FaultyGossipUDP } from "../testing/faulty_gossip";
+import { createSystem } from "../create_system.js";
+import { NodeAgent } from "./node_agent.js";
+import type { System } from "../create_system.js";
+import type { ActorDefinition } from "../types/functional.js";
+import type { FaultyTransport } from "../testing/faulty_transport.js";
+import type { FaultyGossipUDP } from "../testing/faulty_gossip.js";
 
 /** Message sent from TestCluster to NodeWorker via IPC */
 export interface NodeWorkerBootMessage {
@@ -105,8 +105,8 @@ if (process.send) {
 
         if (msg.config.faultInjection) {
           // Lazy-import to avoid loading testing modules in non-fault-injection workers
-          const { FaultyTransport: FT } = require("../testing/faulty_transport");
-          const { FaultyGossipUDP: FG } = require("../testing/faulty_gossip");
+          const { FaultyTransport: FT } = await import("../testing/faulty_transport.js");
+          const { FaultyGossipUDP: FG } = await import("../testing/faulty_gossip.js");
 
           createSystemConfig._wrapTransport = (inner: any) => {
             faultyTransport = new FT(inner);
@@ -129,8 +129,7 @@ if (process.send) {
         // Load actor modules if provided
         if (msg.config.actorModules) {
           for (const modulePath of msg.config.actorModules) {
-            // eslint-disable-next-line @typescript-eslint/no-var-requires
-            const mod = require(modulePath);
+            const mod = await import(modulePath);
             for (const [name, exported] of Object.entries(mod)) {
               if (
                 exported &&

@@ -1,21 +1,21 @@
-import { Actor, ActorRef } from "./actor";
-import { ActorSystem, SpawnOptions } from "./actor_system";
-import { CookieAuthenticator, KeyringAuthenticator } from "./auth";
-import type { Authenticator, CurveKeyPair } from "./auth";
-import { LocalCluster } from "./local_cluster";
-import { InMemoryTransport } from "./in_memory_transport";
-import { LocalRegistry } from "./local_registry";
-import { ZeroMQTransport } from "./zeromq_transport";
-import { GossipUDP } from "./gossip_udp";
-import { GossipProtocol, GossipOptions } from "./gossip_protocol";
-import { DistributedCluster } from "./distributed_cluster";
-import { RegistrySync } from "./registry_sync";
-import { DistributedRegistry } from "./distributed_registry";
-import { ProcessGroupManager } from "./process_group";
-import { Transport } from "./transport";
-import { Cluster } from "./cluster";
-import { Registry } from "./registry";
-import { createLogger } from "./logger";
+import { Actor, ActorRef } from "./actor.js";
+import { ActorSystem, SpawnOptions } from "./actor_system.js";
+import { CookieAuthenticator, KeyringAuthenticator } from "./auth.js";
+import type { Authenticator, CurveKeyPair } from "./auth.js";
+import { LocalCluster } from "./local_cluster.js";
+import { InMemoryTransport } from "./in_memory_transport.js";
+import { LocalRegistry } from "./local_registry.js";
+import { ZeroMQTransport } from "./zeromq_transport.js";
+import { GossipUDP } from "./gossip_udp.js";
+import { GossipProtocol, GossipOptions } from "./gossip_protocol.js";
+import { DistributedCluster } from "./distributed_cluster.js";
+import { RegistrySync } from "./registry_sync.js";
+import { DistributedRegistry } from "./distributed_registry.js";
+import { ProcessGroupManager } from "./process_group.js";
+import { Transport } from "./transport.js";
+import { Cluster } from "./cluster.js";
+import { Registry } from "./registry.js";
+import { createLogger } from "./logger.js";
 import {
   ActorRefFrom,
   ActorRegistry,
@@ -24,9 +24,9 @@ import {
   LocalConfig,
   TypedActorRef,
   WaitForClusterOptions,
-} from "./types/functional";
-import type { Keyring } from "./types/functional";
-import { TimeoutError } from "./errors";
+} from "./types/functional.js";
+import type { Keyring } from "./types/functional.js";
+import { TimeoutError } from "./errors.js";
 import { v4 as uuidv4 } from "uuid";
 
 export function isClusterReady(

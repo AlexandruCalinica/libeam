@@ -5,10 +5,10 @@ import {
   ActorRef,
   ChildSupervisionOptions,
   TerminationReason,
-} from "./actor";
-import { ActorSystem } from "./actor_system";
-import { Logger, createLogger } from "./logger";
-import { telemetry, TelemetryEvents } from "./telemetry";
+} from "./actor.js";
+import { ActorSystem } from "./actor_system.js";
+import { Logger, createLogger } from "./logger.js";
+import { telemetry, TelemetryEvents } from "./telemetry.js";
 
 interface RestartRecord {
   count: number;
