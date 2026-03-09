@@ -5,7 +5,7 @@ on:
     types: [published]
 
 jobs:
-  publish:
+  publish-npm:
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -25,3 +25,12 @@ jobs:
       - run: pnpm publish --provenance --access public --no-git-checks
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  publish-jsr:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - run: npx jsr publish --allow-slow-types

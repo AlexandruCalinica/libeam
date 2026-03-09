@@ -1,0 +1,20 @@
+{
+  "$schema": "https://jsr.io/schema/config-file.v1.json",
+  "name": "@libeam/core",
+  "version": "0.1.1",
+  "exports": {
+    ".": "./src/index.ts",
+    "./testing": "./src/testing/index.ts"
+  },
+  "publish": {
+    "include": [
+      "src/**/*.ts",
+      "README.md",
+      "LICENSE",
+      "jsr.json"
+    ],
+    "exclude": [
+      "src/**/*.test.ts"
+    ]
+  }
+}
