@@ -21,7 +21,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
       - run: pnpm build
-      - run: pnpm test -- --retry 2 --exclude test/zeromq_transport.test.ts --exclude test/test_cluster.test.ts --exclude test/fault_injection.test.ts --exclude test/cookie_rotation.test.ts
+      - run: pnpm test:ci
       - run: pnpm publish --provenance --access public --no-git-checks
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
