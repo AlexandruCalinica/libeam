@@ -270,9 +270,9 @@ export class ActorRef<TCast = any, TCall = any, TReply = any> {
 export interface StashedMessage {
   type: "cast" | "call";
   message: any;
-  /** For call messages, the resolve/reject functions */
   resolve?: (value: any) => void;
   reject?: (error: any) => void;
+  timer?: ReturnType<typeof setTimeout>;
 }
 
 /**

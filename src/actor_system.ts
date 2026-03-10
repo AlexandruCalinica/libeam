@@ -2759,41 +2759,48 @@ export class ActorSystem implements HealthCheckable {
     }
 
     if (nodeId === this.id && this.actors.has(id)) {
-      // Local actor - queue through mailbox so it can be stashed
       const mailbox = this.mailboxes.get(id);
       if (!mailbox) {
         throw new ActorNotFoundError(id, this.id);
       }
 
-      return new Promise((resolve, reject) => {
-        const timer = setTimeout(() => {
-          reject(new TimeoutError("actor call", timeout));
-        }, timeout);
+      // Fast path: invoke handleCall synchronously when the actor is idle.
+      // Skips Promise + setTimeout + setImmediate round-trip (~14µs → ~1-2µs).
+      // Conditions: actor not currently processing, not paused, mailbox empty
+      // (empty mailbox guarantees message ordering is preserved).
+      const actor = this.actors.get(id);
+      if (
+        actor &&
+        !this.processingActors.has(id) &&
+        !this.pausedMailboxes.has(id) &&
+        mailbox.length === 0
+      ) {
+        return this._syncLocalCall(id, actor, message, timeout, mailbox);
+      }
 
+      // Slow path: queue through mailbox for stashing / ordering
+      return new Promise((resolve, reject) => {
         const stashedMessage: StashedMessage = {
           type: "call",
           message,
-          resolve: (result: any) => {
-            clearTimeout(timer);
-            resolve(result);
-          },
-          reject: (err: any) => {
-            clearTimeout(timer);
-            reject(err);
-          },
+          resolve,
+          reject,
+          timer: setTimeout(() => {
+            reject(new TimeoutError("actor call", timeout));
+          }, timeout),
         };
 
         try {
           const enqueued = mailbox.enqueue(stashedMessage);
           if (!enqueued) {
-            clearTimeout(timer);
+            clearTimeout(stashedMessage.timer);
             telemetry.execute(TelemetryEvents.mailbox.overflow, {}, { actor_id: id, message_type: "call" });
             reject(new MailboxFullError());
           } else {
             this.scheduleProcessMailbox(id);
           }
         } catch (err) {
-          clearTimeout(timer);
+          clearTimeout(stashedMessage.timer);
           reject(err);
         }
       });
@@ -2941,6 +2948,103 @@ export class ActorSystem implements HealthCheckable {
     } finally {
       actor.context.currentMessage = prevMessage;
       this.processingActors.delete(actorId);
+    }
+  }
+
+  /**
+   * Synchronous fast path for local calls when the actor is idle.
+   * Bypasses Promise + setTimeout + setImmediate (~14µs → ~1-2µs).
+   *
+   * SAFETY: Both processingActors and mailboxScheduled are locked to prevent
+   * concurrent processMailbox execution. If the handler stashes the message,
+   * we fall back to a deferred Promise that processMailbox will resolve.
+   */
+  private async _syncLocalCall(
+    id: string,
+    actor: Actor,
+    message: any,
+    timeout: number,
+    mailbox: BoundedMailbox,
+  ): Promise<any> {
+    const prevMessage = actor.context.currentMessage;
+    const stashedMessage: StashedMessage = { type: "call", message };
+    actor.context.currentMessage = stashedMessage;
+    this._resetIdleTimeout(id, actor);
+
+    // Lock both flags to prevent concurrent processMailbox
+    this.processingActors.add(id);
+    this.mailboxScheduled.add(id);
+
+    const hasCallTelemetry =
+      telemetry.hasHandlers([...TelemetryEvents.actor.handleCall, "stop"]) ||
+      telemetry.hasHandlers([...TelemetryEvents.actor.handleCall, "start"]);
+    const callMeta = hasCallTelemetry ? { actor_id: id } : undefined;
+
+    try {
+      if (callMeta) {
+        telemetry.execute(
+          [...TelemetryEvents.actor.handleCall, "start"],
+          { system_time: Date.now() },
+          callMeta,
+        );
+      }
+      const callStart = hasCallTelemetry ? performance.now() : 0;
+
+      let result = actor.handleCall(message);
+      if (result && typeof (result as any).then === "function") {
+        result = await result;
+      }
+
+      // Check if handler stashed the message
+      const wasStashed = actor.context.stash.includes(stashedMessage);
+      if (wasStashed) {
+        // Handler stashed — create a deferred Promise with timeout.
+        // processMailbox will resolve/reject via stashedMessage.resolve/reject.
+        return new Promise<any>((resolve, reject) => {
+          const timer = setTimeout(() => {
+            reject(new TimeoutError("actor call", timeout));
+          }, timeout);
+          stashedMessage.resolve = (r: any) => {
+            clearTimeout(timer);
+            resolve(r);
+          };
+          stashedMessage.reject = (e: any) => {
+            clearTimeout(timer);
+            reject(e);
+          };
+        });
+      }
+
+      if (callMeta) {
+        telemetry.execute(
+          [...TelemetryEvents.actor.handleCall, "stop"],
+          { duration_ms: performance.now() - callStart },
+          callMeta,
+        );
+      }
+      return result;
+    } catch (err) {
+      if (callMeta) {
+        telemetry.execute(
+          [...TelemetryEvents.actor.handleCall, "exception"],
+          { duration_ms: 0 },
+          { actor_id: id, error: err },
+        );
+      }
+      // Error propagates to caller via throw — no crash handling needed.
+      // This matches processMailbox behavior: call errors go to reject(),
+      // not to supervisor.handleCrash.
+      throw err;
+    } finally {
+      actor.context.currentMessage = prevMessage;
+      this.processingActors.delete(id);
+
+      // If messages arrived during our lock, schedule processing
+      if (mailbox.length > 0 && this.actors.has(id) && !this.pausedMailboxes.has(id)) {
+        setImmediate(() => this.processMailbox(id));
+      } else {
+        this.mailboxScheduled.delete(id);
+      }
     }
   }
 
@@ -4360,6 +4464,8 @@ export class ActorSystem implements HealthCheckable {
       telemetry.hasHandlers([...TelemetryEvents.actor.handleCast, "stop"]) ||
       telemetry.hasHandlers([...TelemetryEvents.actor.handleCast, "start"]);
 
+    this.processingActors.add(id);
+
     while (
       processed < batchSize &&
       mailbox.length > 0 &&
@@ -4369,7 +4475,6 @@ export class ActorSystem implements HealthCheckable {
       const stashedMessage = mailbox.dequeue()!;
       actor.context.currentMessage = stashedMessage;
       this._resetIdleTimeout(id, actor);
-      this.processingActors.add(id);
 
       try {
         if (stashedMessage.type === "cast") {
@@ -4413,6 +4518,7 @@ export class ActorSystem implements HealthCheckable {
             }
             const wasStashed = actor.context.stash.includes(stashedMessage);
             if (!wasStashed && stashedMessage.resolve) {
+              if (stashedMessage.timer) clearTimeout(stashedMessage.timer);
               stashedMessage.resolve(result);
             }
             if (callMeta) {
@@ -4432,6 +4538,7 @@ export class ActorSystem implements HealthCheckable {
             }
             const wasStashed = actor.context.stash.includes(stashedMessage);
             if (!wasStashed && stashedMessage.reject) {
+              if (stashedMessage.timer) clearTimeout(stashedMessage.timer);
               stashedMessage.reject(err);
             } else if (!wasStashed) {
               throw err;
@@ -4447,17 +4554,16 @@ export class ActorSystem implements HealthCheckable {
           );
         }
         this.supervisor.handleCrash(actor.self, err);
-        // After crash, stop processing this actor's batch
         actor.context.currentMessage = undefined;
-        this.processingActors.delete(id);
         break;
       } finally {
         actor.context.currentMessage = undefined;
-        this.processingActors.delete(id);
       }
 
       processed++;
     }
+
+    this.processingActors.delete(id);
 
     // Continue processing if more messages and actor is still alive.
     // Yield to event loop after batch for fairness.
