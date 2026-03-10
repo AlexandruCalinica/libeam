@@ -204,7 +204,7 @@ class Telemetry {
 }
 
 /** Global telemetry singleton. */
-export const telemetry = new Telemetry();
+export const telemetry: Telemetry = new Telemetry();
 
 // ---------------------------------------------------------------------------
 // Event name constants

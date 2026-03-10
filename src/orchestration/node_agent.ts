@@ -24,6 +24,19 @@ export interface NodeInfo {
   actorCount: number;
 }
 
+/** Explicit call handlers for JSR fast-check (no slow types). */
+export type NodeAgentCalls = {
+  ping: () => "pong";
+  getNodeInfo: () => NodeInfo;
+  registerActor: (name: string, definition: ActorDefinition<any, any, any>) => void;
+  spawn: (className: string, options?: NodeAgentSpawnOptions) => string;
+  stopActor: (actorName: string) => Promise<boolean>;
+  callActor: (actorName: string, method: string, ...args: any[]) => Promise<any>;
+  castActor: (actorName: string, method: string, ...args: any[]) => Promise<void>;
+  getActorIds: () => string[];
+  shutdown: () => Promise<void>;
+};
+
 /**
  * NodeAgent — a regular actor that runs on every node, enabling remote
  * actor management via standard actor calls.
@@ -46,7 +59,7 @@ export interface NodeInfo {
  * await remoteAgent.call("getNodeInfo");
  * ```
  */
-export const NodeAgent = createActor((ctx, self, system: System) => {
+export const NodeAgent: ActorDefinition<[System], NodeAgentCalls, {}> = createActor((ctx, self, system: System) => {
   // Internal registry for functional actors (class-based actors use ActorSystem.registerActorClass)
   const actorDefinitions = new Map<string, ActorDefinition<any, any, any>>();
 

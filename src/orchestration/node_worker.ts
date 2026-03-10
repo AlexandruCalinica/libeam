@@ -136,7 +136,7 @@ if (process.send) {
                 (exported as any).__type === "functional-actor"
               ) {
                 // Functional actor — register on NodeAgent via local call
-                await agentRef.call("registerActor", name, exported);
+                await agentRef.call("registerActor", name, exported as ActorDefinition<any, any, any>);
               } else if (typeof exported === "function") {
                 // Class-based actor
                 system.register(exported as any);

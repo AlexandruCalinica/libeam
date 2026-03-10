@@ -96,7 +96,7 @@ class LoggerConfig {
   }
 }
 
-export const loggerConfig = new LoggerConfig();
+export const loggerConfig: LoggerConfig = new LoggerConfig();
 
 /**
  * A structured logger with context.
