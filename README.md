@@ -2321,6 +2321,25 @@ Higher `maxDemand` allows more concurrent workers, reducing wall-clock time.
 | BroadcastDispatcher | ~654 ops/s | ~1.5 ms |
 | PartitionDispatcher | ~515 ops/s | ~1.9 ms |
 
+### Call Performance
+
+Actor `call` (request/response) benchmarks. The sync fast path bypasses Promise + setTimeout + setImmediate when the target actor is idle, reducing per-call overhead from ~14µs to ~3µs.
+
+| Scenario | Throughput | Per-call Latency |
+|----------|-----------|-----------------|
+| 10k sequential calls | ~312 ops/s | ~3.2 µs |
+| 10k sequential echo | ~314 ops/s | ~3.2 µs |
+| 10k parallel → 1 actor | ~253 ops/s | ~4.0 µs |
+| 10k parallel → 4 actors | ~289 ops/s | ~3.5 µs |
+| 10k parallel → 16 actors | ~289 ops/s | ~3.5 µs |
+| 5k contention, 10 in-flight | ~583 ops/s | ~1.7 ms |
+| 5k contention, 100 in-flight | ~599 ops/s | ~1.7 ms |
+| 10k chain: A → B (1 hop) | ~153 ops/s | ~6.6 µs |
+| 10k chain: A → B → C (2 hops) | ~99 ops/s | ~10.1 µs |
+| 10k mixed 50/50 call/cast | ~27 ops/s | ~3.7 µs/op |
+
+Sequential and parallel calls hit the sync fast path (~3µs). Contention scenarios fall back to the mailbox path when messages queue up. Each call-chain hop adds ~3.5µs.
+
 ## License
 
 ISC
