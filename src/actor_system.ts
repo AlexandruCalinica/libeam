@@ -75,6 +75,35 @@ export interface ShutdownOptions {
   drainMailboxes?: boolean;
 }
 
+export interface DrainOptions {
+  /** Node ID to migrate actors to. If not provided, actors are not migrated — just drained. */
+  migrateTarget?: string;
+  /** Max time in ms to wait for drain to complete. Default: 30000 */
+  timeout?: number;
+}
+
+export interface DrainResult {
+  /** Number of actors successfully migrated */
+  migrated: number;
+  /** Number of actors that drained naturally (mailbox emptied + terminated) */
+  drained: number;
+  /** Actor names that failed migration */
+  failed: string[];
+}
+
+export interface ActorInfo {
+  /** Internal actor instance ID */
+  actorId: string;
+  /** Registered name, if any */
+  name?: string;
+  /** Actor class name */
+  className: string;
+  /** Whether the actor implements Migratable */
+  migratable: boolean;
+  /** Number of child actors */
+  childCount: number;
+}
+
 export interface SystemTimeouts {
   /** Timeout for remote watch/link setup requests. Default: 5000 */
   remoteOperationTimeout?: number;
@@ -219,6 +248,7 @@ export class ActorSystem implements HealthCheckable {
   private readonly defaultMailboxConfig: MailboxConfig;
   private readonly log: Logger;
   private _isShuttingDown = false;
+  private _isDraining = false;
   private _isRunning = false;
   private readonly pausedMailboxes = new Set<string>();
   private readonly processingActors = new Set<string>();
@@ -290,6 +320,13 @@ export class ActorSystem implements HealthCheckable {
   }
 
   /**
+   * Returns true if the system is draining (not accepting new spawns but still processing).
+   */
+  isDraining(): boolean {
+    return this._isDraining;
+  }
+
+  /**
    * Returns health status of the actor system.
    */
   getHealth(): ComponentHealth {
@@ -304,6 +341,15 @@ export class ActorSystem implements HealthCheckable {
         name: "ActorSystem",
         status: "unhealthy",
         message: "System is not running",
+        details: { actorCount, totalMailboxSize },
+      };
+    }
+
+    if (this._isDraining) {
+      return {
+        name: "ActorSystem",
+        status: "degraded",
+        message: "System is draining",
         details: { actorCount, totalMailboxSize },
       };
     }
@@ -332,6 +378,22 @@ export class ActorSystem implements HealthCheckable {
         registeredClasses: this.actorClasses.size,
       },
     };
+  }
+
+  /**
+   * Returns information about all actors in the system.
+   */
+  getActors(): ActorInfo[] {
+    return Array.from(this.actors.entries()).map(([id, actor]) => {
+      const metadata = this.actorMetadata.get(id);
+      return {
+        actorId: id,
+        name: metadata?.options.name,
+        className: metadata?.actorClass.name ?? "unknown",
+        migratable: isMigratable(actor),
+        childCount: actor.context?.children.size ?? 0,
+      };
+    });
   }
 
   /**
@@ -409,6 +471,74 @@ export class ActorSystem implements HealthCheckable {
       },
       { node_id: this.id },
     );
+  }
+
+  /**
+   * Puts the system into drain mode: stops accepting new spawns
+   * while allowing existing actors to continue processing.
+   * Optionally migrates migratable actors to a target node.
+   * @param options Drain configuration
+   * @returns Result with migration/drain counts
+   */
+  async drain(options: DrainOptions = {}): Promise<DrainResult> {
+    if (this._isDraining) {
+      return { migrated: 0, drained: 0, failed: [] };
+    }
+
+    const { migrateTarget, timeout = 30000 } = options;
+    this._isDraining = true;
+
+    const result: DrainResult = { migrated: 0, drained: 0, failed: [] };
+
+    if (migrateTarget) {
+      const migrateResult = await this.migrateAll(migrateTarget, timeout);
+      result.migrated = migrateResult.migrated;
+      result.failed = migrateResult.failed;
+    }
+
+    const remainingTimeout = Math.max(timeout - (migrateTarget ? 5000 : 0), 1000);
+    await this._drainMailboxes(remainingTimeout);
+
+    result.drained = this.actors.size;
+
+    return result;
+  }
+
+  /**
+   * Exits drain mode, re-enabling spawn operations.
+   */
+  undrain(): void {
+    this._isDraining = false;
+  }
+
+  /**
+   * Migrates all migratable actors to the target node.
+   * Non-migratable actors and actors with children are skipped.
+   * @param targetNodeId Node to migrate actors to
+   * @param timeout Timeout per individual migration in ms. Default: 30000
+   * @returns Aggregate migration result
+   */
+  async migrateAll(
+    targetNodeId: string,
+    timeout: number = 30000,
+  ): Promise<DrainResult> {
+    const result: DrainResult = { migrated: 0, drained: 0, failed: [] };
+
+    const actors = this.getActors();
+    const migratable = actors.filter(
+      (a) => a.migratable && a.name && a.childCount === 0,
+    );
+
+    for (const actor of migratable) {
+      const migrationResult = await this.migrate(actor.name!, targetNodeId, timeout);
+      if (migrationResult.success) {
+        result.migrated++;
+      } else {
+        result.failed.push(actor.name!);
+      }
+    }
+
+    return result;
   }
 
   async migrate(
@@ -732,7 +862,7 @@ export class ActorSystem implements HealthCheckable {
     options?: SpawnOptions,
   ): ActorRef;
   spawn(actorClass: any, options: SpawnOptions = {}): ActorRef {
-    if (this._isShuttingDown) {
+    if (this._isShuttingDown || this._isDraining) {
       throw new SystemShuttingDownError("spawn actors");
     }
 
@@ -841,7 +971,7 @@ export class ActorSystem implements HealthCheckable {
     options?: SpawnOptions,
   ): ActorRef;
   spawnChild(parentRef: ActorRef, actorClass: any, options: SpawnOptions = {}): ActorRef {
-    if (this._isShuttingDown) {
+    if (this._isShuttingDown || this._isDraining) {
       throw new SystemShuttingDownError("spawn child actors");
     }
 

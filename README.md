@@ -66,7 +66,7 @@ libeam implements the core primitives from Elixir/OTP, adapted for the Node.js r
 |---------|--------|
 | `Task.async/await` | Use native `Promise` / `async-await` |
 | Selective receive | Not practical without BEAM VM |
-| Hot code upgrades | Use rolling deploys |
+| Hot code upgrades | Use `libeam deploy` for rolling deploys |
 | `Application` behaviour | Use standard Node.js entry points |
 | ETS/DETS | Use `Map` or external stores (Redis, etc.) |
 
@@ -76,8 +76,29 @@ All core OTP features have been implemented. See the feature table above for the
 
 ## Installation
 
+### npm / pnpm / yarn
+
 ```bash
+# npm
+npm install libeam
+
+# pnpm
 pnpm add libeam
+
+# yarn
+yarn add libeam
+```
+
+### Deno (JSR)
+
+```bash
+deno add jsr:@libeam/core
+```
+
+Or import directly:
+
+```typescript
+import { createSystem, createActor } from "jsr:@libeam/core";
 ```
 
 ## Quick Start
@@ -2218,6 +2239,117 @@ Run the migration example:
 ```bash
 npx ts-node examples/low-level/actor_migration.ts
 ```
+
+## CLI
+
+libeam ships a CLI for managing clusters — start/stop nodes, rolling deploys with zero-downtime actor migration, drain, and status.
+
+```bash
+# Run without installing
+npx libeam --help
+
+# Or install globally
+npm install -g libeam
+libeam --help
+```
+
+### Config File
+
+Create a `libeam.config.ts` in your project root (or run `libeam init`):
+
+```typescript
+// libeam.config.ts
+export default {
+  cluster: {
+    cookie: process.env.LIBEAM_COOKIE ?? "change-me-in-production",
+    seedNodes: [],
+  },
+  nodes: {
+    gateway: {
+      entry: "./src/gateway.ts",
+      roles: ["gateway"],
+      count: 1,
+      port: 5000,
+    },
+    worker: {
+      entry: "./src/worker.ts",
+      roles: ["worker"],
+      count: 3,
+      port: "auto",
+    },
+  },
+  deploy: {
+    strategy: "rolling",
+    drainTimeout: 30000,
+    healthCheck: {
+      interval: 1000,
+      retries: 10,
+    },
+  },
+};
+```
+
+Each node entry module exports a default function that creates and returns a system:
+
+```typescript
+// src/worker.ts
+import { createSystem, createActor } from "libeam";
+
+export default async function ({ port, cookie, seedNodes, roles }) {
+  const system = await createSystem({
+    type: "distributed",
+    port,
+    cookie,
+    seedNodes,
+    roles,
+  });
+
+  const Worker = createActor((ctx, self) => {
+    return self.onCall("ping", () => "pong");
+  });
+  system.spawn(Worker, { name: "worker" });
+
+  return system;
+}
+```
+
+### Commands
+
+| Command | Description |
+|---------|-------------|
+| `libeam init` | Scaffold a `libeam.config.ts` |
+| `libeam start` | Start cluster nodes from config |
+| `libeam start --role=worker` | Start only nodes with a specific role |
+| `libeam start --daemon` | Start in background |
+| `libeam stop` | Graceful shutdown |
+| `libeam status` | Show cluster health and node status |
+| `libeam nodes` | List cluster members |
+| `libeam actors` | List actors across the cluster |
+| `libeam actors --migratable` | Show only migratable actors |
+| `libeam drain <node> --target=<node>` | Drain node, migrate actors to target |
+| `libeam migrate <actor> <target>` | Migrate a single actor |
+| `libeam migrate --all --from=<n> --to=<n>` | Bulk migrate all migratable actors |
+| `libeam deploy --role=worker` | Rolling deploy for a role |
+| `libeam deploy --all` | Rolling deploy entire cluster |
+| `libeam deploy --all --dry-run` | Preview deploy without executing |
+| `libeam eval "expression"` | Run JS expression with libeam available |
+
+### Rolling Deploy
+
+`libeam deploy` performs zero-downtime rolling deployments with automatic actor migration:
+
+```
+libeam deploy --role=worker
+
+For each old worker node:
+  1. Start new instance (new code)
+  2. Health check — wait until ready
+  3. Drain old instance → migrate actors to new
+  4. Stop old instance
+  5. Repeat for next node
+```
+
+Use `--dry-run` to preview the deployment plan without executing it.
 
 ## Architecture
 

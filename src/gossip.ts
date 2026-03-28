@@ -23,6 +23,8 @@ export interface PeerState {
   status?: PeerStatus;
   /** Roles declared by this node (e.g., ["gateway", "worker"]). */
   roles?: string[];
+  /** Custom metadata key-value pairs propagated via gossip. */
+  metadata?: Record<string, string>;
 }
 
 /**

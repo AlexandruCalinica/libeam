@@ -5,10 +5,17 @@
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "bin": {
+    "libeam": "./dist/cli/index.js"
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./cli": {
+      "types": "./dist/cli/index.d.ts",
+      "import": "./dist/cli/index.js"
     },
     "./testing": {
       "types": "./dist/testing/index.d.ts",
@@ -61,6 +68,7 @@
     "vitest": "^4.0.13"
   },
   "dependencies": {
+    "clipanion": "4.0.0-rc.4",
     "uuid": "^13.0.0",
     "zeromq": "^6.5.0"
   }

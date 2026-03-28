@@ -57,6 +57,30 @@ export class GossipProtocol extends EventEmitter {
   }
 
   /**
+   * Sets a custom metadata key-value pair that will be propagated via gossip.
+   */
+  setMetadata(key: string, value: string): void {
+    if (!this.self.metadata) {
+      this.self.metadata = {};
+    }
+    this.self.metadata[key] = value;
+  }
+
+  /**
+   * Gets a metadata value for this node.
+   */
+  getMetadata(key: string): string | undefined {
+    return this.self.metadata?.[key];
+  }
+
+  /**
+   * Gets a metadata value for a specific peer.
+   */
+  getPeerMetadata(nodeId: string, key: string): string | undefined {
+    return this.peers.get(nodeId)?.metadata?.[key];
+  }
+
+  /**
    * Returns true if this node is in the process of leaving the cluster.
    */
   isLeaving(): boolean {

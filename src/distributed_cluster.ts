@@ -81,6 +81,20 @@ export class DistributedCluster
   }
 
   /**
+   * Sets custom metadata for this node, propagated via gossip.
+   */
+  setMetadata(key: string, value: string): void {
+    this.gossipProtocol.setMetadata(key, value);
+  }
+
+  /**
+   * Gets a metadata value for a specific node.
+   */
+  getMetadata(nodeId: string, key: string): string | undefined {
+    return this.gossipProtocol.getPeerMetadata(nodeId, key);
+  }
+
+  /**
    * Returns health status of the cluster.
    */
   getHealth(): ComponentHealth {
