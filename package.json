@@ -1,6 +1,6 @@
 {
   "name": "libeam",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "Erlang/OTP-inspired actor system for TypeScript — actors, supervision, distribution, GenStage",
   "type": "module",
   "main": "./dist/index.js",

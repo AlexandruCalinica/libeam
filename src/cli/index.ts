@@ -18,7 +18,7 @@ export type { NodeInfo, NodeStatus, SupervisorMessage, WorkerMessage } from "./i
 const cli = new Cli({
   binaryLabel: "libeam",
   binaryName: "libeam",
-  binaryVersion: "0.1.2",
+  binaryVersion: "0.2.0",
 });
 
 cli.register(StartCommand);
