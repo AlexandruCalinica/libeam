@@ -227,11 +227,14 @@ describe("Actor Idle Timeout", () => {
       const ref = system.spawn(TimeoutTrackingActor);
       ref.cast({ type: "setIdleTimeout", timeoutMs: 30 });
 
-      // Wait for multiple timeouts
-      await new Promise((resolve) => setTimeout(resolve, 150));
+      // Poll until we see at least 3 timeouts — avoids flaky fixed waits on slow CI runners
+      // where each timer→setImmediate→handleInfo→reset cycle can take 50-75ms under load
+      await waitFor(
+        async () => (await ref.call({ type: "getTimeoutCount" })) >= 3,
+        { timeout: 2000, interval: 50 },
+      );
 
       const count = await ref.call({ type: "getTimeoutCount" });
-      // Should have fired multiple times (at least 3-4 times in 150ms with 30ms timeout)
       expect(count).toBeGreaterThanOrEqual(3);
     });
   });
