@@ -2351,6 +2351,202 @@ For each old worker node:
 
 Use `--dry-run` to preview the deployment plan without executing it.
 
+## Docker Deployment
+
+libeam clusters can be deployed as Docker containers, with one container per server. This is ideal for multi-server setups managed by orchestrators like [Coolify](https://coolify.io), Portainer, or plain Docker Compose.
+
+> **Single-server clusters**: If all nodes run on one machine, prefer `libeam start` (the CLI supervisor) over Docker — it avoids unnecessary container overhead and networking complexity.
+
+### Port Convention
+
+Each libeam node uses 3 consecutive ports:
+
+| Port | Protocol | Purpose |
+|------|----------|---------|
+| `N` | TCP | ZeroMQ RPC (ROUTER socket) |
+| `N+1` | TCP | ZeroMQ PUB (event broadcasts) |
+| `N+2` | UDP | Gossip (cluster membership) |
+
+When you pass `port: 5000` to `createSystem`, it binds RPC on 5000, PUB on 5001, and gossip on 5002.
+
+### Environment Variables
+
+| Variable | Description | Example |
+|----------|-------------|---------|
+| `LIBEAM_COOKIE` | Cluster authentication secret | `my-cluster-secret` |
+| `LIBEAM_PORT` | Base port (RPC, then +1 PUB, +2 gossip) | `5000` |
+| `LIBEAM_ADVERTISE_ADDRESS` | Address this node advertises to peers | `10.0.0.1` |
+| `LIBEAM_SEED_NODES` | Comma-separated gossip addresses to join | `10.0.0.1:5002,10.0.0.2:5002` |
+| `LIBEAM_ROLES` | Comma-separated node roles | `worker,compute` |
+| `LIBEAM_NODE_NAME` | Human-readable node identifier | `worker-1` |
+
+`createSystem` reads `LIBEAM_COOKIE` and `LIBEAM_ADVERTISE_ADDRESS` from the environment automatically — explicit config values take precedence.
+
+### Entry Module
+
+Each container runs an entry module that creates and returns a system:
+
+```typescript
+// src/worker.ts
+import { createSystem, createActor } from "libeam";
+import { createServer } from "http";
+
+export default async function start() {
+  const system = await createSystem({
+    type: "distributed",
+    port: parseInt(process.env.LIBEAM_PORT ?? "5000"),
+    seedNodes: process.env.LIBEAM_SEED_NODES?.split(",").filter(Boolean) ?? [],
+    roles: process.env.LIBEAM_ROLES?.split(",").filter(Boolean),
+    // LIBEAM_COOKIE and LIBEAM_ADVERTISE_ADDRESS are read from env automatically
+  });
+
+  // Spawn actors...
+  const Worker = createActor((ctx, self) => {
+    return self.onCall("ping", () => "pong");
+  });
+  system.spawn(Worker, { name: "worker" });
+
+  // Health endpoint (required for orchestrator health checks)
+  createServer((req, res) => {
+    if (req.url === "/health") {
+      const health = system.system.getHealth();
+      res.writeHead(health.status === "healthy" ? 200 : 503);
+      res.end(JSON.stringify(health));
+    }
+  }).listen(3000);
+
+  return system;
+}
+
+// Run when executed directly
+start();
+```
+
+### Dockerfile
+
+```dockerfile
+FROM node:22-alpine AS builder
+WORKDIR /app
+COPY package.json pnpm-lock.yaml ./
+RUN corepack enable && pnpm install --frozen-lockfile
+COPY . .
+RUN pnpm build
+
+FROM node:22-alpine
+RUN apk add --no-cache curl
+WORKDIR /app
+COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/package.json ./
+EXPOSE 5000 5001 5002/udp 3000
+CMD ["node", "dist/worker.js"]
+```
+
+### docker-compose.yml
+
+For a 3-node cluster (1 gateway + 2 workers), using `network_mode: host` for the simplest cross-server networking:
+
+```yaml
+services:
+  libeam:
+    build: .
+    network_mode: host
+    environment:
+      - LIBEAM_COOKIE=${LIBEAM_COOKIE:?}
+      - LIBEAM_PORT=${LIBEAM_PORT:-5000}
+      - LIBEAM_ADVERTISE_ADDRESS=${SERVER_PRIVATE_IP:?}
+      - LIBEAM_SEED_NODES=${SEED_NODES:-}
+      - LIBEAM_ROLES=${NODE_ROLE:-worker}
+      - LIBEAM_NODE_NAME=${NODE_NAME:-node}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    restart: unless-stopped
+```
+
+Deploy this same compose file to each server, with per-server environment variables:
+
+```bash
+# Server 1 (gateway) — 10.0.0.1
+LIBEAM_COOKIE=change-me-in-production
+LIBEAM_PORT=5000
+SERVER_PRIVATE_IP=10.0.0.1
+SEED_NODES=
+NODE_ROLE=gateway
+NODE_NAME=gateway
+
+# Server 2 (worker) — 10.0.0.2
+LIBEAM_COOKIE=change-me-in-production
+LIBEAM_PORT=5000
+SERVER_PRIVATE_IP=10.0.0.2
+SEED_NODES=10.0.0.1:5002
+NODE_ROLE=worker
+NODE_NAME=worker-1
+
+# Server 3 (worker) — 10.0.0.3
+LIBEAM_COOKIE=change-me-in-production
+LIBEAM_PORT=5000
+SERVER_PRIVATE_IP=10.0.0.3
+SEED_NODES=10.0.0.1:5002,10.0.0.2:5002
+NODE_ROLE=worker
+NODE_NAME=worker-2
+```
+
+### Why `network_mode: host`?
+
+With one container per server, host networking is the simplest option:
+
+- **No port mapping needed** — the container binds directly to the host's network interfaces
+- **UDP gossip works natively** — no bridge NAT translation issues
+- **`advertiseAddress` is the server's real IP** — peers can reach it directly
+- **No port conflicts** — there's only one libeam container per server
+
+Bridge networking works too, but requires explicit port mapping (`ports: - "5000:5000"`, `"5002:5002/udp"`) and is unnecessary overhead when running one container per host.
+
+### Firewall Rules
+
+Open these ports between your servers (private network):
+
+| Port | Protocol | Direction |
+|------|----------|-----------|
+| `5000` | TCP | Bidirectional (RPC) |
+| `5001` | TCP | Bidirectional (PUB/SUB) |
+| `5002` | UDP | Bidirectional (Gossip) |
+| `3000` | TCP | Inbound only (health checks, optional) |
+
+### Rolling Deploys with Docker
+
+Docker orchestrators typically restart containers, causing brief per-node downtime. For a multi-node cluster, deploy one server at a time — the remaining nodes keep the cluster alive:
+
+```bash
+# 1. Drain the node before redeploying (optional, preserves migratable actor state)
+docker exec libeam npx libeam drain worker-2 --target=worker-1
+
+# 2. Redeploy via your orchestrator (Coolify, etc.)
+# The node restarts, rejoins the cluster via gossip
+
+# 3. Repeat for next server
+```
+
+For clusters where actor state doesn't need migration, simply redeploy each server sequentially — gossip handles re-joining automatically.
+
+### Cluster Introspection via Docker
+
+The CLI commands remain useful for inspecting running clusters:
+
+```bash
+# Check cluster membership
+docker exec libeam npx libeam nodes
+
+# List actors across the cluster
+docker exec libeam npx libeam actors
+
+# Drain a node before maintenance
+docker exec libeam npx libeam drain worker-1 --target=worker-2
+```
+
 ## Architecture
 
 ```

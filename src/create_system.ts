@@ -383,7 +383,7 @@ async function createDistributedSystem(config: DistributedConfig): Promise<Syste
     seedNodes: config.seedNodes,
   };
 
-  const advertiseAddr = config.advertiseAddress ?? "127.0.0.1";
+  const advertiseAddr = config.advertiseAddress ?? process.env.LIBEAM_ADVERTISE_ADDRESS ?? "127.0.0.1";
   const rpcAddress = `tcp://${advertiseAddr}:${rpcPort}`;
   const gossipAddress = `${advertiseAddr}:${gossipPort}`;
 
